@@ -1807,6 +1807,11 @@ METHOD(kernel_ipsec_t, add_sa, status_t,
 		sa->flags |= XFRM_STATE_NOECN;
 	}
 
+	if (data->inbound && data->forward_icmp)
+	{
+		sa->flags |= XFRM_STATE_ICMP;
+	}
+
 	if (data->inbound)
 	{
 		switch (data->copy_dscp)
@@ -3064,6 +3069,12 @@ static status_t add_policy_internal(private_kernel_netlink_ipsec_t *this,
 	policy_info->action = mapping->type != POLICY_DROP ? XFRM_POLICY_ALLOW
 													   : XFRM_POLICY_BLOCK;
 	policy_info->share = XFRM_SHARE_ANY;
+
+	if (mapping->type == POLICY_IPSEC && policy->direction != POLICY_IN &&
+		ipsec->cfg.forward_icmp)
+	{
+		policy_info->flags |= XFRM_POLICY_ICMP;
+	}
 
 	/* policies don't expire */
 	policy_info->lft.soft_byte_limit = XFRM_INF;
