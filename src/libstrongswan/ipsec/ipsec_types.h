@@ -163,6 +163,8 @@ struct ipsec_sa_cfg_t {
 	uint32_t reqid;
 	/** number of policies of the same kind (in/out/fwd) attached to SA */
 	uint32_t policy_count;
+	/** whether SA is to forward certain ICMP error messages automatically */
+	bool forward_icmp;
 	/** details about ESP/AH */
 	struct {
 		/** TRUE if this protocol is used */

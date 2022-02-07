@@ -61,12 +61,13 @@ u_int ipsec_sa_cfg_hash(ipsec_sa_cfg_t *this)
 	return chunk_hash_inc(chunk_from_thing(this->mode),
 			chunk_hash_inc(chunk_from_thing(this->reqid),
 			chunk_hash_inc(chunk_from_thing(this->policy_count),
+			chunk_hash_inc(chunk_from_thing(this->forward_icmp),
 			chunk_hash_inc(chunk_from_thing(this->esp.use),
 			chunk_hash_inc(chunk_from_thing(this->esp.spi),
 			chunk_hash_inc(chunk_from_thing(this->ah.use),
 			chunk_hash_inc(chunk_from_thing(this->ah.spi),
 			chunk_hash_inc(chunk_from_thing(this->ipcomp.transform),
-				chunk_hash(chunk_from_thing(this->ipcomp.cpi))))))))));
+				chunk_hash(chunk_from_thing(this->ipcomp.cpi)))))))))));
 }
 
 /*
@@ -77,6 +78,7 @@ bool ipsec_sa_cfg_equals(ipsec_sa_cfg_t *a, ipsec_sa_cfg_t *b)
 	return a->mode == b->mode &&
 		a->reqid == b->reqid &&
 		a->policy_count == b->policy_count &&
+		a->forward_icmp == b->forward_icmp &&
 		a->esp.use == b->esp.use &&
 		a->esp.spi == b->esp.spi &&
 		a->ah.use == b->ah.use &&
