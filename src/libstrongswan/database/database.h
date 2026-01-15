@@ -57,6 +57,8 @@ enum db_driver_t {
 	DB_SQLITE,
 	/** MySQL database */
 	DB_MYSQL,
+	/** PostgreSQL database */
+	DB_PGSQL,
 };
 
 /**

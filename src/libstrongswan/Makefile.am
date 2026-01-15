@@ -571,6 +571,13 @@ if MONOLITHIC
 endif
 endif
 
+if USE_PGSQL
+  SUBDIRS += plugins/pgsql
+if MONOLITHIC
+  libstrongswan_la_LIBADD += plugins/pgsql/libstrongswan-pgsql.la
+endif
+endif
+
 if USE_SQLITE
   SUBDIRS += plugins/sqlite
 if MONOLITHIC
