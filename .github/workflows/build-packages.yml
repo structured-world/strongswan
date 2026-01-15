@@ -1,0 +1,185 @@
+name: Build Packages
+
+on:
+  push:
+    branches:
+      - sw
+  workflow_dispatch:
+
+concurrency:
+  group: build-packages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine version
+        id: version
+        run: |
+          # Get upstream version from configure.ac
+          UPSTREAM_VERSION=$(grep -m1 'AC_INIT' configure.ac | sed -E 's/.*\[([0-9]+\.[0-9]+\.[0-9]+)\].*/\1/')
+
+          # Build number from run number
+          BUILD_NUM=${{ github.run_number }}
+
+          # Final version: upstream-sw.build
+          VERSION="${UPSTREAM_VERSION}-sw.${BUILD_NUM}"
+
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "upstream_version=$UPSTREAM_VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            autoconf \
+            automake \
+            libtool \
+            pkg-config \
+            gettext \
+            libgmp-dev \
+            libssl-dev \
+            libcurl4-openssl-dev \
+            libpq-dev \
+            libsystemd-dev \
+            libcap-dev \
+            libpam0g-dev \
+            libldap2-dev \
+            libsqlite3-dev \
+            libgcrypt20-dev \
+            libnm-dev \
+            dpkg-dev \
+            fakeroot \
+            debhelper
+
+      - name: Build strongSwan
+        run: |
+          autoreconf -i
+          ./configure \
+            --prefix=/usr \
+            --sysconfdir=/etc \
+            --enable-eap-identity \
+            --enable-eap-mschapv2 \
+            --enable-eap-radius \
+            --enable-eap-tls \
+            --enable-xauth-eap \
+            --enable-vici \
+            --enable-swanctl \
+            --enable-sql \
+            --enable-pgsql \
+            --enable-sqlite \
+            --enable-systemd \
+            --enable-openssl \
+            --enable-curl \
+            --enable-ldap \
+            --enable-pam \
+            --enable-gcrypt \
+            --enable-nm \
+            --enable-farp \
+            --enable-dhcp \
+            --enable-attr-sql \
+            --disable-static
+
+          make -j$(nproc)
+
+      - name: Create DEB packages
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          PKGDIR="strongswan-sw_${VERSION}"
+
+          # Main package
+          mkdir -p "${PKGDIR}/DEBIAN"
+          mkdir -p "${PKGDIR}/usr"
+          mkdir -p "${PKGDIR}/etc"
+
+          make DESTDIR="$(pwd)/${PKGDIR}" install
+
+          # Create control file
+          cat > "${PKGDIR}/DEBIAN/control" << EOF
+          Package: strongswan-sw
+          Version: ${VERSION}
+          Section: net
+          Priority: optional
+          Architecture: amd64
+          Depends: libgmp10, libssl3, libcurl4, libsystemd0, libcap2, libpam0g, libldap2, libsqlite3-0, libgcrypt20
+          Maintainer: Structured World Foundation <dev@sw.foundation>
+          Description: strongSwan IPsec implementation (SW fork)
+           strongSwan is a complete IPsec implementation for Linux.
+           This is the Structured World fork with socket permissions fix
+           and PostgreSQL plugin support.
+          EOF
+
+          # Build deb
+          fakeroot dpkg-deb --build "${PKGDIR}"
+
+          # PostgreSQL plugin package
+          PGSQL_PKGDIR="strongswan-pgsql_${VERSION}"
+          mkdir -p "${PGSQL_PKGDIR}/DEBIAN"
+          mkdir -p "${PGSQL_PKGDIR}/usr/lib/ipsec/plugins"
+
+          # Copy only pgsql plugin
+          cp -a "${PKGDIR}/usr/lib/ipsec/plugins/libstrongswan-pgsql.so" "${PGSQL_PKGDIR}/usr/lib/ipsec/plugins/" || true
+
+          cat > "${PGSQL_PKGDIR}/DEBIAN/control" << EOF
+          Package: strongswan-pgsql
+          Version: ${VERSION}
+          Section: net
+          Priority: optional
+          Architecture: amd64
+          Depends: strongswan-sw (= ${VERSION}), libpq5
+          Maintainer: Structured World Foundation <dev@sw.foundation>
+          Description: PostgreSQL plugin for strongSwan (SW fork)
+           PostgreSQL database backend for strongSwan SQL plugin.
+           Enables storing VPN user credentials in PostgreSQL.
+          EOF
+
+          fakeroot dpkg-deb --build "${PGSQL_PKGDIR}"
+
+          # List artifacts
+          ls -la *.deb
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb-packages
+          path: "*.deb"
+          retention-days: 30
+
+      - name: Create Release
+        if: github.ref == 'refs/heads/sw'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: strongSwan SW ${{ steps.version.outputs.version }}
+          body: |
+            ## strongSwan SW Fork v${{ steps.version.outputs.version }}
+
+            Based on upstream strongSwan ${{ steps.version.outputs.upstream_version }}
+
+            ### Changes from upstream:
+            - Socket permissions fix (umask 0660 for Unix sockets)
+            - PostgreSQL plugin build support
+
+            ### Packages:
+            - `strongswan-sw` - Main package
+            - `strongswan-pgsql` - PostgreSQL plugin
+
+            ### Installation:
+            ```bash
+            sudo dpkg -i strongswan-sw_*.deb strongswan-pgsql_*.deb
+            sudo apt-get install -f  # Install dependencies
+            ```
+          files: "*.deb"
+          draft: false
+          prerelease: false
