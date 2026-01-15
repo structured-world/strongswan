@@ -352,19 +352,10 @@ METHOD(enumerator_t, pgsql_enumerator_enumerate, bool,
 				}
 				else
 				{
-					/*
-					 * Note: We use strdup() here, giving ownership to caller.
-					 * This differs from MySQL plugin which returns pointers to
-					 * internal result buffers. Our approach is safer as the
-					 * caller's string remains valid after enumerator destroy,
-					 * but requires caller to free() the returned string.
-					 * This is a deliberate design choice for PostgreSQL plugin.
-					 */
-					*out = strdup(value);
-					if (!*out)
-					{
-						DBG1(DBG_LIB, "strdup() failed for DB_TEXT");
-					}
+					/* Return pointer into internal PGresult buffer,
+					 * valid until the enumerator (and PGresult) is destroyed,
+					 * matching the MySQL plugin's behavior. */
+					*out = (char*)value;
 				}
 				break;
 			}

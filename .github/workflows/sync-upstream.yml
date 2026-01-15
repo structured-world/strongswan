@@ -59,6 +59,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      rebase_success: ${{ steps.sync.outputs.rebase_success }}
 
     steps:
       - name: Checkout
@@ -140,7 +142,7 @@ jobs:
 
   build:
     needs: [check-release, sync]
-    if: needs.check-release.outputs.has_new_release == 'true'
+    if: needs.check-release.outputs.has_new_release == 'true' && needs.sync.outputs.rebase_success != 'false'
     uses: ./.github/workflows/build-packages.yml
     with:
       upstream_version: ${{ needs.check-release.outputs.upstream_version }}
