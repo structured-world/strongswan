@@ -254,8 +254,9 @@ static char *convert_sql(const char *sql, int *param_count)
 		src++;
 	}
 
-	/* Allocate result buffer (each ? becomes $N, max 3 extra chars per param) */
-	result = malloc(len + count * 3 + 1);
+	/* Allocate result buffer (each ? becomes $N, up to 5 extra chars per param
+	 * to handle parameter numbers up to 9999) */
+	result = malloc(len + count * 5 + 1);
 	if (!result)
 	{
 		*param_count = 0;
@@ -360,6 +361,10 @@ METHOD(enumerator_t, pgsql_enumerator_enumerate, bool,
 					 * This is a deliberate design choice for PostgreSQL plugin.
 					 */
 					*out = strdup(value);
+					if (!*out)
+					{
+						DBG1(DBG_LIB, "strdup() failed for DB_TEXT");
+					}
 				}
 				break;
 			}
@@ -378,8 +383,16 @@ METHOD(enumerator_t, pgsql_enumerator_enumerate, bool,
 					{
 						/* Binary format */
 						out->ptr = malloc(len);
-						memcpy(out->ptr, value, len);
-						out->len = len;
+						if (!out->ptr)
+						{
+							DBG1(DBG_LIB, "malloc() failed for DB_BLOB");
+							out->len = 0;
+						}
+						else
+						{
+							memcpy(out->ptr, value, len);
+							out->len = len;
+						}
 					}
 					else
 					{
@@ -390,8 +403,16 @@ METHOD(enumerator_t, pgsql_enumerator_enumerate, bool,
 						if (unescaped)
 						{
 							out->ptr = malloc(result_len);
-							memcpy(out->ptr, unescaped, result_len);
-							out->len = result_len;
+							if (!out->ptr)
+							{
+								DBG1(DBG_LIB, "malloc() failed for DB_BLOB");
+								out->len = 0;
+							}
+							else
+							{
+								memcpy(out->ptr, unescaped, result_len);
+								out->len = result_len;
+							}
 							PQfreemem(unescaped);
 						}
 						else
@@ -767,7 +788,15 @@ METHOD(database_t, execute, int,
 		{
 			size_t len = strlen(pgsql) + 20;
 			exec_sql = malloc(len);
-			snprintf(exec_sql, len, "%s RETURNING id", pgsql);
+			if (!exec_sql)
+			{
+				DBG1(DBG_LIB, "malloc() failed for RETURNING clause");
+				exec_sql = pgsql; /* Fall back to original query */
+			}
+			else
+			{
+				snprintf(exec_sql, len, "%s RETURNING id", pgsql);
+			}
 		}
 	}
 
@@ -952,6 +981,7 @@ static char *build_conninfo(const char *uri)
 	uri_copy = strdup(uri + 13);
 	if (!uri_copy)
 	{
+		DBG1(DBG_LIB, "strdup() failed for PostgreSQL URI");
 		return NULL;
 	}
 	start = uri_copy;
@@ -1007,6 +1037,7 @@ static char *build_conninfo(const char *uri)
 	conninfo = malloc(len);
 	if (!conninfo)
 	{
+		DBG1(DBG_LIB, "malloc() failed for conninfo string");
 		free(uri_copy);
 		return NULL;
 	}
