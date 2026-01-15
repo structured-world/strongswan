@@ -55,15 +55,18 @@ jobs:
           - os: ubuntu-24.04
             dist: noble
             libssl: libssl3t64
+            libldap: libldap-2.5-0
             arch: amd64
           - os: ubuntu-22.04
             dist: jammy
             libssl: libssl3
+            libldap: libldap-2.5-0
             arch: amd64
           # Debian 12 uses ubuntu-latest with different packages
           - os: ubuntu-latest
             dist: bookworm
             libssl: libssl3
+            libldap: libldap-2.5-0
             arch: amd64
             debian: true
 
@@ -138,6 +141,7 @@ jobs:
           DIST="${{ matrix.dist }}"
           ARCH="${{ matrix.arch }}"
           LIBSSL="${{ matrix.libssl }}"
+          LIBLDAP="${{ matrix.libldap }}"
 
           # Main package
           PKGDIR="strongswan-sw_${VERSION}_${DIST}_${ARCH}"
@@ -151,7 +155,7 @@ jobs:
           Section: net
           Priority: optional
           Architecture: ${ARCH}
-          Depends: libgmp10, ${LIBSSL}, libcurl4, libsystemd0, libcap2, libpam0g, libldap-2.5-0, libsqlite3-0, libgcrypt20, libpq5
+          Depends: libgmp10, ${LIBSSL}, libcurl4, libsystemd0, libcap2, libpam0g, ${LIBLDAP}, libsqlite3-0, libgcrypt20, libpq5
           Conflicts: strongswan, strongswan-charon, strongswan-starter
           Replaces: strongswan, strongswan-charon, strongswan-starter
           Maintainer: Structured World Foundation <dev@sw.foundation>
@@ -173,17 +177,13 @@ jobs:
 
           # Copy pgsql plugin - find it regardless of install location
           PGSQL_SO=$(find "${PKGDIR}" -name "libstrongswan-pgsql.so" -type f | head -1)
-          if [ -n "$PGSQL_SO" ]; then
-            cp -a "$PGSQL_SO" "${PGSQL_PKGDIR}/usr/lib/ipsec/plugins/"
-          fi
-
-          # Verify the plugin was copied successfully
-          if [ ! -f "${PGSQL_PKGDIR}/usr/lib/ipsec/plugins/libstrongswan-pgsql.so" ]; then
+          if [ -z "$PGSQL_SO" ]; then
             echo "ERROR: PostgreSQL plugin not found in build output"
-            echo "Searched locations:"
+            echo "Available plugins:"
             find "${PKGDIR}" -name "*.so" -path "*/plugins/*" | head -20
             exit 1
           fi
+          cp -a "$PGSQL_SO" "${PGSQL_PKGDIR}/usr/lib/ipsec/plugins/"
 
           cat > "${PGSQL_PKGDIR}/DEBIAN/control" << EOF
           Package: strongswan-pgsql

@@ -281,7 +281,8 @@ static char *convert_sql(const char *sql, int *param_count)
 	{
 		if (*src == '\'')
 		{
-			/* Check for escaped quote ('') */
+			/* Check for escaped quote ('') - safe: if *src is non-NUL,
+			 * *(src+1) is valid (may be NUL terminator) */
 			if (in_string && *(src + 1) == '\'')
 			{
 				src++;  /* Skip the escaped quote */
@@ -317,7 +318,8 @@ static char *convert_sql(const char *sql, int *param_count)
 	{
 		if (*src == '\'')
 		{
-			/* Check for escaped quote ('') */
+			/* Check for escaped quote ('') - safe: if *src is non-NUL,
+			 * *(src+1) is valid (may be NUL terminator) */
 			if (in_string && *(src + 1) == '\'')
 			{
 				/* Copy both quotes */
