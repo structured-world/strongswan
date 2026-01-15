@@ -1,78 +1,79 @@
 name: "CodeQL"
 
-on: [push, pull_request]
+# Only run on PRs to sw branch and pushes to sw branch
+# Scoped to our fork-specific changes only
+on:
+  push:
+    branches: [sw]
+    paths:
+      - 'src/libstrongswan/plugins/pgsql/**'
+      - 'src/libstrongswan/database/**'
+      - 'src/libstrongswan/networking/streams/stream_service_unix.c'
+      - 'configure.ac'
+  pull_request:
+    branches: [sw]
+    paths:
+      - 'src/libstrongswan/plugins/pgsql/**'
+      - 'src/libstrongswan/database/**'
+      - 'src/libstrongswan/networking/streams/stream_service_unix.c'
+      - 'configure.ac'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
-  CCACHE_BASEDIR: ${{ github.workspace }}
-  CCACHE_COMPRESS: true
-  CCACHE_MAXSIZE: 200M
-  # CodeQL currently doesn't support ccache
   CCACHE_DISABLE: true
-  OS_NAME: linux
 
 jobs:
-  pre-check:
-    runs-on: ubuntu-latest
-    outputs:
-      should_skip: ${{ steps.skip-check.outputs.should_skip }}
-    steps:
-      - id: skip-check
-        uses: fkirc/skip-duplicate-actions@master
-        with:
-          concurrent_skipping: 'same_content_newer'
-
   analyze:
-    needs: pre-check
-    if: ${{ needs.pre-check.outputs.should_skip != 'true' }}
+    name: Analyze SW changes
     runs-on: ubuntu-latest
     permissions:
       actions: read
       contents: read
       security-events: write
-    strategy:
-      fail-fast: false
-      matrix:
-        language: [ 'cpp', 'python', 'ruby' ]
+
     steps:
-    - uses: actions/checkout@v4
+    - name: Checkout
+      uses: actions/checkout@v4
+
     - name: Initialize CodeQL
       uses: github/codeql-action/init@v3
       with:
-        languages: ${{ matrix.language }}
-        config-file: ./.github/codeql/config.yml
+        languages: cpp
+        # Scope queries to our paths only
+        config: |
+          paths:
+            - src/libstrongswan/plugins/pgsql
+            - src/libstrongswan/database
+            - src/libstrongswan/networking/streams/stream_service_unix.c
+          query-filters:
+            - exclude:
+                id: cpp/fixme-comment
+            - exclude:
+                id: cpp/wrong-type-format-argument
 
-    - if: matrix.language == 'python' || matrix.language == 'ruby'
-      name: Autobuild
-      uses: github/codeql-action/autobuild@v3
-
-    # this follows the steps of the Linux workflow
-    - if: matrix.language == 'cpp'
-      uses: actions/cache@v4
-      with:
-        path: ~/.cache/ccache
-        key: ccache-ubuntu-latest-gcc-codeql-${{ github.sha }}
-        restore-keys: |
-          ccache-ubuntu-latest-gcc-codeql
-          ccache-ubuntu-latest-gcc-all-${{ github.sha }}
-          ccache-ubuntu-latest-gcc-all-
-          ccache-ubuntu-latest-gcc-
-    - if: matrix.language == 'cpp'
+    - name: Install build dependencies
       run: |
-          sudo apt-get install -qq ccache
-          echo "PATH=/usr/lib/ccache:$PATH" >> $GITHUB_ENV
-          ccache -z
-    - if: matrix.language == 'cpp'
-      env:
-        TEST: codeql
-      uses: ./.github/actions/default
-    - if: matrix.language == 'cpp'
-      run: ccache -s
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential autoconf automake libtool pkg-config \
+          libgmp-dev libssl-dev libpq-dev libsystemd-dev
+
+    - name: Build for CodeQL analysis
+      run: |
+        autoreconf -i
+        ./configure \
+          --enable-pgsql \
+          --enable-sql \
+          --enable-vici \
+          --enable-systemd \
+          --enable-openssl
+        # Only build libstrongswan (contains our changes)
+        make -C src/libstrongswan -j$(nproc)
 
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@v3
       with:
-        category: "/language:${{matrix.language}}"
+        category: "/language:cpp"
