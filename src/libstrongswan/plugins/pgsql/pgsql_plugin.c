@@ -52,9 +52,9 @@ METHOD(plugin_t, destroy, void,
 }
 
 /*
- * Create plugin instance
+ * see header file
  */
-plugin_t *pgsql_plugin_create()
+PLUGIN_DEFINE(pgsql)
 {
 	private_pgsql_plugin_t *this;
 
