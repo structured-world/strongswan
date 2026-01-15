@@ -51,6 +51,7 @@ jobs:
             libgmp-dev \
             libssl-dev \
             libcurl4-openssl-dev \
+            libpq-dev \
             libsystemd-dev \
             libcap-dev \
             libpam0g-dev \
@@ -76,6 +77,7 @@ jobs:
             --enable-vici \
             --enable-swanctl \
             --enable-sql \
+            --enable-pgsql \
             --enable-sqlite \
             --enable-systemd \
             --enable-openssl \
@@ -121,6 +123,29 @@ jobs:
           # Build deb
           fakeroot dpkg-deb --build "${PKGDIR}"
 
+          # PostgreSQL plugin package
+          PGSQL_PKGDIR="strongswan-pgsql_${VERSION}"
+          mkdir -p "${PGSQL_PKGDIR}/DEBIAN"
+          mkdir -p "${PGSQL_PKGDIR}/usr/lib/ipsec/plugins"
+
+          # Copy pgsql plugin
+          cp -a "${PKGDIR}/usr/lib/ipsec/plugins/libstrongswan-pgsql.so" "${PGSQL_PKGDIR}/usr/lib/ipsec/plugins/"
+
+          cat > "${PGSQL_PKGDIR}/DEBIAN/control" << EOF
+          Package: strongswan-pgsql
+          Version: ${VERSION}
+          Section: net
+          Priority: optional
+          Architecture: amd64
+          Depends: strongswan-sw (= ${VERSION}), libpq5
+          Maintainer: Structured World Foundation <dev@sw.foundation>
+          Description: PostgreSQL plugin for strongSwan (SW fork)
+           PostgreSQL database backend for strongSwan SQL plugin.
+           Enables storing VPN user credentials in PostgreSQL.
+          EOF
+
+          fakeroot dpkg-deb --build "${PGSQL_PKGDIR}"
+
           # List artifacts
           ls -la *.deb
 
@@ -144,13 +169,15 @@ jobs:
 
             ### Changes from upstream:
             - Socket permissions fix (umask 0660 for Unix sockets)
+            - PostgreSQL database plugin
 
             ### Packages:
             - `strongswan-sw` - Main package with all standard plugins
+            - `strongswan-pgsql` - PostgreSQL database plugin
 
             ### Installation:
             ```bash
-            sudo dpkg -i strongswan-sw_*.deb
+            sudo dpkg -i strongswan-sw_*.deb strongswan-pgsql_*.deb
             sudo apt-get install -f  # Install dependencies
             ```
           files: "*.deb"
