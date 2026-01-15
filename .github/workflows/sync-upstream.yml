@@ -37,7 +37,10 @@ jobs:
             UPSTREAM_TAG="${{ inputs.upstream_tag }}"
           else
             # Get latest upstream release tag (format: X.Y.Z)
-            UPSTREAM_TAG=$(git tag -l --sort=-version:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+            # Use git ls-remote to only get tags from upstream, not origin
+            UPSTREAM_TAG=$(git ls-remote --tags upstream | \
+              sed -n 's|.*refs/tags/\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$|\1|p' | \
+              sort -V | tail -1)
           fi
 
           echo "Latest upstream tag: $UPSTREAM_TAG"

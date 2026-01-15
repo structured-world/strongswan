@@ -482,6 +482,19 @@ METHOD(database_t, query, enumerator_t*,
 		param_formats = calloc(param_count, sizeof(int));
 		blobs = calloc(param_count, sizeof(chunk_t));
 
+		if (!param_values || !param_lengths || !param_formats || !blobs)
+		{
+			DBG1(DBG_LIB, "memory allocation failed for query parameters");
+			free(param_values);
+			free(param_lengths);
+			free(param_formats);
+			free(blobs);
+			free(pgsql);
+			conn_release(this, conn);
+			va_end(args);
+			return NULL;
+		}
+
 		for (int i = 0; i < param_count; i++)
 		{
 			db_type_t type = va_arg(args, db_type_t);
@@ -491,6 +504,11 @@ METHOD(database_t, query, enumerator_t*,
 				{
 					int val = va_arg(args, int);
 					param_values[i] = malloc(32);
+					if (!param_values[i])
+					{
+						param_error = TRUE;
+						break;
+					}
 					snprintf(param_values[i], 32, "%d", val);
 					param_formats[i] = 0; /* text */
 					break;
@@ -499,6 +517,11 @@ METHOD(database_t, query, enumerator_t*,
 				{
 					u_int val = va_arg(args, u_int);
 					param_values[i] = malloc(32);
+					if (!param_values[i])
+					{
+						param_error = TRUE;
+						break;
+					}
 					snprintf(param_values[i], 32, "%u", val);
 					param_formats[i] = 0;
 					break;
@@ -506,7 +529,19 @@ METHOD(database_t, query, enumerator_t*,
 				case DB_TEXT:
 				{
 					char *val = va_arg(args, char*);
-					param_values[i] = val ? strdup(val) : NULL;
+					if (val)
+					{
+						param_values[i] = strdup(val);
+						if (!param_values[i])
+						{
+							param_error = TRUE;
+							break;
+						}
+					}
+					else
+					{
+						param_values[i] = NULL;
+					}
 					param_formats[i] = 0;
 					break;
 				}
@@ -530,6 +565,11 @@ METHOD(database_t, query, enumerator_t*,
 				{
 					double val = va_arg(args, double);
 					param_values[i] = malloc(64);
+					if (!param_values[i])
+					{
+						param_error = TRUE;
+						break;
+					}
 					snprintf(param_values[i], 64, "%f", val);
 					param_formats[i] = 0;
 					break;
@@ -639,6 +679,16 @@ METHOD(database_t, query, enumerator_t*,
 		.conn = conn,
 	);
 
+	if (!enumerator->col_types)
+	{
+		DBG1(DBG_LIB, "memory allocation failed for column types");
+		PQclear(result);
+		conn_release(this, conn);
+		free(enumerator);
+		va_end(args);
+		return NULL;
+	}
+
 	/* Store expected column types */
 	for (int i = 0; i < ncols; i++)
 	{
@@ -688,6 +738,19 @@ METHOD(database_t, execute, int,
 		param_formats = calloc(param_count, sizeof(int));
 		param_is_libpq = calloc(param_count, sizeof(bool));
 
+		if (!param_values || !param_lengths || !param_formats || !param_is_libpq)
+		{
+			DBG1(DBG_LIB, "memory allocation failed for execute parameters");
+			free(param_values);
+			free(param_lengths);
+			free(param_formats);
+			free(param_is_libpq);
+			free(pgsql);
+			conn_release(this, conn);
+			va_end(args);
+			return -1;
+		}
+
 		for (int i = 0; i < param_count; i++)
 		{
 			db_type_t type = va_arg(args, db_type_t);
@@ -697,6 +760,11 @@ METHOD(database_t, execute, int,
 				{
 					int val = va_arg(args, int);
 					param_values[i] = malloc(32);
+					if (!param_values[i])
+					{
+						param_error = TRUE;
+						break;
+					}
 					snprintf(param_values[i], 32, "%d", val);
 					break;
 				}
@@ -704,13 +772,30 @@ METHOD(database_t, execute, int,
 				{
 					u_int val = va_arg(args, u_int);
 					param_values[i] = malloc(32);
+					if (!param_values[i])
+					{
+						param_error = TRUE;
+						break;
+					}
 					snprintf(param_values[i], 32, "%u", val);
 					break;
 				}
 				case DB_TEXT:
 				{
 					char *val = va_arg(args, char*);
-					param_values[i] = val ? strdup(val) : NULL;
+					if (val)
+					{
+						param_values[i] = strdup(val);
+						if (!param_values[i])
+						{
+							param_error = TRUE;
+							break;
+						}
+					}
+					else
+					{
+						param_values[i] = NULL;
+					}
 					break;
 				}
 				case DB_BLOB:
@@ -722,6 +807,11 @@ METHOD(database_t, execute, int,
 						size_t escaped_len;
 						param_values[i] = (char*)PQescapeByteaConn(
 							conn->conn, val.ptr, val.len, &escaped_len);
+						if (!param_values[i])
+						{
+							param_error = TRUE;
+							break;
+						}
 						param_is_libpq[i] = TRUE;
 					}
 					else
@@ -734,6 +824,11 @@ METHOD(database_t, execute, int,
 				{
 					double val = va_arg(args, double);
 					param_values[i] = malloc(64);
+					if (!param_values[i])
+					{
+						param_error = TRUE;
+						break;
+					}
 					snprintf(param_values[i], 64, "%f", val);
 					break;
 				}
@@ -965,6 +1060,62 @@ METHOD(database_t, destroy, void,
 }
 
 /**
+ * Escape a value for PostgreSQL conninfo string.
+ * Values with special chars need to be single-quoted with embedded quotes escaped.
+ */
+static char *escape_conninfo_value(const char *value)
+{
+	size_t len, i, j;
+	char *escaped;
+	bool needs_quotes = FALSE;
+
+	if (!value)
+	{
+		return NULL;
+	}
+
+	len = strlen(value);
+
+	/* Check if value needs quoting (contains spaces, quotes, or backslashes) */
+	for (i = 0; i < len; i++)
+	{
+		if (value[i] == ' ' || value[i] == '\'' || value[i] == '\\' ||
+		    value[i] == '=' || value[i] == '#')
+		{
+			needs_quotes = TRUE;
+			break;
+		}
+	}
+
+	if (!needs_quotes)
+	{
+		return strdup(value);
+	}
+
+	/* Allocate worst case: 2 quotes + each char potentially doubled + null */
+	escaped = malloc(len * 2 + 3);
+	if (!escaped)
+	{
+		return NULL;
+	}
+
+	j = 0;
+	escaped[j++] = '\'';
+	for (i = 0; i < len; i++)
+	{
+		if (value[i] == '\'' || value[i] == '\\')
+		{
+			escaped[j++] = '\\';
+		}
+		escaped[j++] = value[i];
+	}
+	escaped[j++] = '\'';
+	escaped[j] = '\0';
+
+	return escaped;
+}
+
+/**
  * Parse URI and build PostgreSQL connection string
  * Format: postgresql://user:pass@host:port/database
  */
@@ -1029,44 +1180,94 @@ static char *build_conninfo(const char *uri)
 		host = start;
 	}
 
+	/* Escape values that may contain special characters */
+	char *esc_user = NULL, *esc_pass = NULL, *esc_host = NULL;
+	char *esc_port = NULL, *esc_db = NULL;
+
+	if (username && !(esc_user = escape_conninfo_value(username)))
+	{
+		free(uri_copy);
+		return NULL;
+	}
+	if (password && !(esc_pass = escape_conninfo_value(password)))
+	{
+		free(esc_user);
+		free(uri_copy);
+		return NULL;
+	}
+	if (host && !(esc_host = escape_conninfo_value(host)))
+	{
+		free(esc_user);
+		free(esc_pass);
+		free(uri_copy);
+		return NULL;
+	}
+	if (port && !(esc_port = escape_conninfo_value(port)))
+	{
+		free(esc_user);
+		free(esc_pass);
+		free(esc_host);
+		free(uri_copy);
+		return NULL;
+	}
+	if (database && !(esc_db = escape_conninfo_value(database)))
+	{
+		free(esc_user);
+		free(esc_pass);
+		free(esc_host);
+		free(esc_port);
+		free(uri_copy);
+		return NULL;
+	}
+
 	/* Build conninfo string with snprintf for safety */
 	len = 256;
-	if (username) len += strlen(username);
-	if (password) len += strlen(password);
-	if (host) len += strlen(host);
-	if (port) len += strlen(port);
-	if (database) len += strlen(database);
+	if (esc_user) len += strlen(esc_user);
+	if (esc_pass) len += strlen(esc_pass);
+	if (esc_host) len += strlen(esc_host);
+	if (esc_port) len += strlen(esc_port);
+	if (esc_db) len += strlen(esc_db);
 
 	conninfo = malloc(len);
 	if (!conninfo)
 	{
 		DBG1(DBG_LIB, "malloc() failed for conninfo string");
+		free(esc_user);
+		free(esc_pass);
+		free(esc_host);
+		free(esc_port);
+		free(esc_db);
 		free(uri_copy);
 		return NULL;
 	}
 
 	offset = 0;
-	if (host)
+	if (esc_host)
 	{
-		offset += snprintf(conninfo + offset, len - offset, "host=%s", host);
+		offset += snprintf(conninfo + offset, len - offset, "host=%s", esc_host);
 	}
-	if (port)
+	if (esc_port)
 	{
-		offset += snprintf(conninfo + offset, len - offset, " port=%s", port);
+		offset += snprintf(conninfo + offset, len - offset, " port=%s", esc_port);
 	}
-	if (database)
+	if (esc_db)
 	{
-		offset += snprintf(conninfo + offset, len - offset, " dbname=%s", database);
+		offset += snprintf(conninfo + offset, len - offset, " dbname=%s", esc_db);
 	}
-	if (username)
+	if (esc_user)
 	{
-		offset += snprintf(conninfo + offset, len - offset, " user=%s", username);
+		offset += snprintf(conninfo + offset, len - offset, " user=%s", esc_user);
 	}
-	if (password)
+	if (esc_pass)
 	{
-		offset += snprintf(conninfo + offset, len - offset, " password=%s", password);
+		offset += snprintf(conninfo + offset, len - offset, " password=%s", esc_pass);
 	}
 
+	free(esc_user);
+	free(esc_pass);
+	free(esc_host);
+	free(esc_port);
+	free(esc_db);
 	free(uri_copy);
 	return conninfo;
 }
@@ -1101,7 +1302,17 @@ pgsql_database_t *pgsql_database_create(char *uri)
 
 	if (!this->conninfo)
 	{
-		DBG1(DBG_LIB, "parsing PostgreSQL URI '%s' failed", uri);
+		/* Log without exposing password - extract host part only */
+		const char *at = strchr(uri + 13, '@');
+		if (at)
+		{
+			DBG1(DBG_LIB, "parsing PostgreSQL URI 'postgresql://***@%s' failed",
+				 at + 1);
+		}
+		else
+		{
+			DBG1(DBG_LIB, "parsing PostgreSQL URI failed");
+		}
 		free(this);
 		return NULL;
 	}
