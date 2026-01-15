@@ -311,10 +311,17 @@ static char *convert_sql(const char *sql, int *param_count)
 		{
 			int written;
 			param_num++;
+			/* Safe: remaining is always > 0 here because:
+			 * 1. Initial allocation: len + count*5 + 1 bytes
+			 * 2. count = number of '?' outside strings (first pass)
+			 * 3. Each '?' uses at most 5 bytes ($1 to $9999)
+			 * 4. Other chars use exactly 1 byte each (same as source)
+			 * 5. We check written < remaining before advancing */
 			written = snprintf(dst, remaining, "$%d", param_num);
 			if (written < 0 || (size_t)written >= remaining)
 			{
-				/* Should never happen - allocation provides 5 chars per param */
+				/* Defensive check - mathematically shouldn't trigger given
+				 * our allocation strategy, but we handle it safely */
 				free(result);
 				*param_count = 0;
 				return NULL;
@@ -418,11 +425,14 @@ METHOD(enumerator_t, pgsql_enumerator_enumerate, bool,
 				}
 				else
 				{
-					/* For binary data, we need to handle bytea format.
-					 * Note: Unlike DB_TEXT which returns internal PGresult buffer,
-					 * DB_BLOB allocates new memory that the caller must free.
-					 * This differs from MySQL plugin behavior where blob memory
-					 * is owned by the enumerator. */
+					/* Memory ownership for DB_BLOB across plugins:
+					 * - SQLite: returns internal buffer, caller must NOT free
+					 * - MySQL: enumerator allocates, freed on next row/destroy
+					 * - PostgreSQL (this): allocates new memory, caller MUST free
+					 *
+					 * We allocate because: (1) text format requires PQunescapeBytea
+					 * which allocates anyway, (2) consistent ownership regardless
+					 * of format, (3) data persists beyond enumerator lifetime. */
 					if (PQfformat(this->result, i) == 1)
 					{
 						/* Binary format */

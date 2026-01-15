@@ -35,9 +35,11 @@ jobs:
             UPSTREAM_VERSION=$(grep -m1 'AC_INIT' configure.ac | sed -E 's/.*\[([0-9]+\.[0-9]+\.[0-9]+)\].*/\1/')
           fi
 
-          # SW version: upstream-sw.N where N increments for each build
-          # TODO: Auto-increment by checking existing releases. For now,
-          # manually update when rebuilding same upstream version.
+          # SW version: upstream-sw.N where N increments for each rebuild
+          # For now, manually bump .N when rebuilding the same upstream version.
+          # Auto-increment would require: gh release list, parse versions,
+          # find max N for this upstream version. Low priority since rebuilds
+          # of the same upstream version are rare.
           VERSION="${UPSTREAM_VERSION}-sw.1"
 
           echo "version=$VERSION" >> $GITHUB_OUTPUT
@@ -169,10 +171,11 @@ jobs:
           mkdir -p "${PGSQL_PKGDIR}/usr/lib/ipsec/plugins"
           mkdir -p "${PGSQL_PKGDIR}/etc/strongswan.d/charon"
 
-          # Copy pgsql plugin - try known locations, then search
-          cp -a "${PKGDIR}/usr/lib/ipsec/plugins/libstrongswan-pgsql.so" "${PGSQL_PKGDIR}/usr/lib/ipsec/plugins/" 2>/dev/null || \
-          cp -a "${PKGDIR}/usr/lib/strongswan/plugins/libstrongswan-pgsql.so" "${PGSQL_PKGDIR}/usr/lib/ipsec/plugins/" 2>/dev/null || \
-          find "${PKGDIR}" -name "libstrongswan-pgsql.so" -exec cp {} "${PGSQL_PKGDIR}/usr/lib/ipsec/plugins/" \;
+          # Copy pgsql plugin - find it regardless of install location
+          PGSQL_SO=$(find "${PKGDIR}" -name "libstrongswan-pgsql.so" -type f | head -1)
+          if [ -n "$PGSQL_SO" ]; then
+            cp -a "$PGSQL_SO" "${PGSQL_PKGDIR}/usr/lib/ipsec/plugins/"
+          fi
 
           # Verify the plugin was copied successfully
           if [ ! -f "${PGSQL_PKGDIR}/usr/lib/ipsec/plugins/libstrongswan-pgsql.so" ]; then
