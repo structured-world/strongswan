@@ -554,6 +554,9 @@ METHOD(database_t, query, enumerator_t*,
 					chunk_t val = va_arg(args, chunk_t);
 					if (val.ptr && val.len > 0)
 					{
+						/* Use binary format for query() - more efficient.
+						 * Note: execute() uses text format with escaping for
+						 * compatibility with INSERT/UPDATE statements. */
 						param_values[i] = (char*)val.ptr;
 						param_lengths[i] = val.len;
 						param_formats[i] = 1; /* binary */
@@ -807,7 +810,10 @@ METHOD(database_t, execute, int,
 					chunk_t val = va_arg(args, chunk_t);
 					if (val.ptr && val.len > 0)
 					{
-						/* Escape bytea for text protocol */
+						/* Use text protocol with escaping for execute().
+						 * This differs from query() which uses binary format.
+						 * Text format is more compatible with INSERT/UPDATE
+						 * statements across different PostgreSQL versions. */
 						size_t escaped_len;
 						param_values[i] = (char*)PQescapeByteaConn(
 							conn->conn, val.ptr, val.len, &escaped_len);
