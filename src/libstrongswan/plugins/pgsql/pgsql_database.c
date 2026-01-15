@@ -275,12 +275,20 @@ static char *convert_sql(const char *sql, int *param_count)
 			int written;
 			param_num++;
 			written = snprintf(dst, remaining, "$%d", param_num);
+			if (written < 0 || (size_t)written >= remaining)
+			{
+				/* Should never happen - allocation provides 5 chars per param */
+				free(result);
+				*param_count = 0;
+				return NULL;
+			}
 			dst += written;
 			remaining -= written;
 		}
 		else
 		{
 			*dst++ = *src;
+			remaining--;
 		}
 		src++;
 	}
