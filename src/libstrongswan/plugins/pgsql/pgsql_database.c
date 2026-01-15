@@ -381,7 +381,11 @@ METHOD(enumerator_t, pgsql_enumerator_enumerate, bool,
 				}
 				else
 				{
-					/* For binary data, we need to handle bytea format */
+					/* For binary data, we need to handle bytea format.
+					 * Note: Unlike DB_TEXT which returns internal PGresult buffer,
+					 * DB_BLOB allocates new memory that the caller must free.
+					 * This differs from MySQL plugin behavior where blob memory
+					 * is owned by the enumerator. */
 					if (PQfformat(this->result, i) == 1)
 					{
 						/* Binary format */
@@ -882,6 +886,10 @@ METHOD(database_t, execute, int,
 	if (need_returning)
 	{
 		/* Append RETURNING id if not already present */
+		/* Add RETURNING clause to get the inserted row ID.
+		 * Note: This assumes the primary key column is named 'id',
+		 * which matches strongSwan's SQL schema convention.
+		 * MySQL uses mysql_stmt_insert_id() which doesn't need column name. */
 		if (!strcasestr(pgsql, "RETURNING"))
 		{
 			size_t len = strlen(pgsql) + 20;
@@ -1244,23 +1252,48 @@ static char *build_conninfo(const char *uri)
 	offset = 0;
 	if (esc_host)
 	{
-		offset += snprintf(conninfo + offset, len - offset, "host=%s", esc_host);
+		int written = snprintf(conninfo + offset, len - offset, "host=%s", esc_host);
+		if (written < 0 || (size_t)written >= len - offset)
+		{
+			goto truncation_error;
+		}
+		offset += written;
 	}
 	if (esc_port)
 	{
-		offset += snprintf(conninfo + offset, len - offset, " port=%s", esc_port);
+		int written = snprintf(conninfo + offset, len - offset, " port=%s", esc_port);
+		if (written < 0 || (size_t)written >= len - offset)
+		{
+			goto truncation_error;
+		}
+		offset += written;
 	}
 	if (esc_db)
 	{
-		offset += snprintf(conninfo + offset, len - offset, " dbname=%s", esc_db);
+		int written = snprintf(conninfo + offset, len - offset, " dbname=%s", esc_db);
+		if (written < 0 || (size_t)written >= len - offset)
+		{
+			goto truncation_error;
+		}
+		offset += written;
 	}
 	if (esc_user)
 	{
-		offset += snprintf(conninfo + offset, len - offset, " user=%s", esc_user);
+		int written = snprintf(conninfo + offset, len - offset, " user=%s", esc_user);
+		if (written < 0 || (size_t)written >= len - offset)
+		{
+			goto truncation_error;
+		}
+		offset += written;
 	}
 	if (esc_pass)
 	{
-		offset += snprintf(conninfo + offset, len - offset, " password=%s", esc_pass);
+		int written = snprintf(conninfo + offset, len - offset, " password=%s", esc_pass);
+		if (written < 0 || (size_t)written >= len - offset)
+		{
+			goto truncation_error;
+		}
+		offset += written;
 	}
 
 	free(esc_user);
@@ -1270,6 +1303,17 @@ static char *build_conninfo(const char *uri)
 	free(esc_db);
 	free(uri_copy);
 	return conninfo;
+
+truncation_error:
+	DBG1(DBG_LIB, "conninfo string truncation error");
+	free(conninfo);
+	free(esc_user);
+	free(esc_pass);
+	free(esc_host);
+	free(esc_port);
+	free(esc_db);
+	free(uri_copy);
+	return NULL;
 }
 
 /*

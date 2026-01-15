@@ -86,6 +86,9 @@ jobs:
           git fetch upstream --tags
 
           # Update master to upstream release tag
+          # Force push is intentional here - master should always mirror
+          # the upstream release exactly. This repo is a fork where only
+          # the sw branch contains our modifications.
           git checkout master
           git reset --hard "$UPSTREAM_TAG"
           git push origin master --force

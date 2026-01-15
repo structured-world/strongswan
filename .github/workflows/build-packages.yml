@@ -35,7 +35,9 @@ jobs:
             UPSTREAM_VERSION=$(grep -m1 'AC_INIT' configure.ac | sed -E 's/.*\[([0-9]+\.[0-9]+\.[0-9]+)\].*/\1/')
           fi
 
-          # SW version: upstream-sw.1 (increment for each build of same upstream)
+          # SW version: upstream-sw.N where N increments for each build
+          # TODO: Auto-increment by checking existing releases. For now,
+          # manually update when rebuilding same upstream version.
           VERSION="${UPSTREAM_VERSION}-sw.1"
 
           echo "version=$VERSION" >> $GITHUB_OUTPUT
