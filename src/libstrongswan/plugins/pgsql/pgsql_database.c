@@ -10,9 +10,10 @@
  * option) any later version.
  */
 
+#define _GNU_SOURCE
+
 #include "pgsql_database.h"
 
-#define _GNU_SOURCE
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -236,6 +237,9 @@ static conn_t *conn_get(private_pgsql_database_t *this, transaction_t **trans)
 /**
  * Convert strongSwan SQL with ? placeholders to PostgreSQL $1, $2, etc.
  * Also counts parameters.
+ *
+ * Note: Only replaces ? outside of SQL string literals (single-quoted strings).
+ * Handles escaped quotes ('') inside strings properly.
  */
 static char *convert_sql(const char *sql, int *param_count)
 {
@@ -244,11 +248,24 @@ static char *convert_sql(const char *sql, int *param_count)
 	char *result, *dst;
 	size_t len = strlen(sql);
 	size_t remaining;
+	bool in_string = FALSE;
 
-	/* First pass: count placeholders */
+	/* First pass: count placeholders (only outside string literals) */
 	while (*src)
 	{
-		if (*src == '?')
+		if (*src == '\'')
+		{
+			/* Check for escaped quote ('') */
+			if (in_string && *(src + 1) == '\'')
+			{
+				src++;  /* Skip the escaped quote */
+			}
+			else
+			{
+				in_string = !in_string;
+			}
+		}
+		else if (*src == '?' && !in_string)
 		{
 			count++;
 		}
@@ -264,13 +281,33 @@ static char *convert_sql(const char *sql, int *param_count)
 		return NULL;
 	}
 
-	/* Second pass: convert */
+	/* Second pass: convert (reset string tracking) */
 	src = sql;
 	dst = result;
 	remaining = len + count * 5 + 1;
+	in_string = FALSE;
+
 	while (*src)
 	{
-		if (*src == '?')
+		if (*src == '\'')
+		{
+			/* Check for escaped quote ('') */
+			if (in_string && *(src + 1) == '\'')
+			{
+				/* Copy both quotes */
+				*dst++ = *src++;
+				remaining--;
+				*dst++ = *src;
+				remaining--;
+			}
+			else
+			{
+				in_string = !in_string;
+				*dst++ = *src;
+				remaining--;
+			}
+		}
+		else if (*src == '?' && !in_string)
 		{
 			int written;
 			param_num++;
