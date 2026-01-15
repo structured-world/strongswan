@@ -866,7 +866,8 @@ static char *build_conninfo(const char *uri)
 	char *username = NULL, *password = NULL, *host = NULL;
 	char *port = NULL, *database = NULL;
 	char *conninfo = NULL;
-	char *uri_copy, *pos, *start;
+	char *uri_copy, *pos, *start, *colon;
+	size_t len, offset;
 
 	if (strncmp(uri, "postgresql://", 13) != 0)
 	{
@@ -874,6 +875,10 @@ static char *build_conninfo(const char *uri)
 	}
 
 	uri_copy = strdup(uri + 13);
+	if (!uri_copy)
+	{
+		return NULL;
+	}
 	start = uri_copy;
 
 	/* Parse user:pass@host:port/database */
@@ -882,7 +887,7 @@ static char *build_conninfo(const char *uri)
 	{
 		*pos = '\0';
 		/* user:pass */
-		char *colon = strchr(start, ':');
+		colon = strchr(start, ':');
 		if (colon)
 		{
 			*colon = '\0';
@@ -916,8 +921,8 @@ static char *build_conninfo(const char *uri)
 		host = start;
 	}
 
-	/* Build conninfo string */
-	size_t len = 256;
+	/* Build conninfo string with snprintf for safety */
+	len = 256;
 	if (username) len += strlen(username);
 	if (password) len += strlen(password);
 	if (host) len += strlen(host);
@@ -925,32 +930,32 @@ static char *build_conninfo(const char *uri)
 	if (database) len += strlen(database);
 
 	conninfo = malloc(len);
-	conninfo[0] = '\0';
+	if (!conninfo)
+	{
+		free(uri_copy);
+		return NULL;
+	}
 
+	offset = 0;
 	if (host)
 	{
-		strcat(conninfo, "host=");
-		strcat(conninfo, host);
+		offset += snprintf(conninfo + offset, len - offset, "host=%s", host);
 	}
 	if (port)
 	{
-		strcat(conninfo, " port=");
-		strcat(conninfo, port);
+		offset += snprintf(conninfo + offset, len - offset, " port=%s", port);
 	}
 	if (database)
 	{
-		strcat(conninfo, " dbname=");
-		strcat(conninfo, database);
+		offset += snprintf(conninfo + offset, len - offset, " dbname=%s", database);
 	}
 	if (username)
 	{
-		strcat(conninfo, " user=");
-		strcat(conninfo, username);
+		offset += snprintf(conninfo + offset, len - offset, " user=%s", username);
 	}
 	if (password)
 	{
-		strcat(conninfo, " password=");
-		strcat(conninfo, password);
+		offset += snprintf(conninfo + offset, len - offset, " password=%s", password);
 	}
 
 	free(uri_copy);

@@ -2,10 +2,10 @@ AM_CPPFLAGS = \
     -I$(top_srcdir)/src/libstrongswan
 
 AM_CFLAGS = \
-    $(PLUGIN_CFLAGS)
+    $(PLUGIN_CFLAGS) $(PGSQL_CFLAGS)
 
 AM_LDFLAGS = \
-    $(shell pkg-config --libs libpq)
+    $(PGSQL_LIBS)
 
 if MONOLITHIC
 noinst_LTLIBRARIES = libstrongswan-pgsql.la
