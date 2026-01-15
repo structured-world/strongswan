@@ -351,7 +351,14 @@ METHOD(enumerator_t, pgsql_enumerator_enumerate, bool,
 				}
 				else
 				{
-					/* strdup the value - caller must be aware this is allocated */
+					/*
+					 * Note: We use strdup() here, giving ownership to caller.
+					 * This differs from MySQL plugin which returns pointers to
+					 * internal result buffers. Our approach is safer as the
+					 * caller's string remains valid after enumerator destroy,
+					 * but requires caller to free() the returned string.
+					 * This is a deliberate design choice for PostgreSQL plugin.
+					 */
 					*out = strdup(value);
 				}
 				break;
@@ -442,6 +449,7 @@ METHOD(database_t, query, enumerator_t*,
 	int *param_formats = NULL;
 	chunk_t *blobs = NULL;
 	int blob_count = 0;
+	bool param_error = FALSE;
 
 	if (param_count > 0)
 	{
@@ -508,10 +516,44 @@ METHOD(database_t, query, enumerator_t*,
 					break;
 				}
 				default:
-					DBG1(DBG_LIB, "invalid parameter type");
+					DBG1(DBG_LIB, "invalid parameter type %d", type);
+					param_error = TRUE;
 					break;
 			}
+			if (param_error)
+			{
+				break;
+			}
 		}
+	}
+
+	/* Abort on parameter error - cleanup allocated memory */
+	if (param_error)
+	{
+		for (int i = 0; i < param_count && param_values; i++)
+		{
+			bool is_blob = FALSE;
+			for (int j = 0; j < blob_count; j++)
+			{
+				if (param_values[i] == (char*)blobs[j].ptr)
+				{
+					is_blob = TRUE;
+					break;
+				}
+			}
+			if (!is_blob && param_values[i])
+			{
+				free(param_values[i]);
+			}
+		}
+		free(param_values);
+		free(param_lengths);
+		free(param_formats);
+		free(blobs);
+		free(pgsql);
+		va_end(args);
+		conn_release(this, conn);
+		return NULL;
 	}
 
 	/* Execute query */
@@ -612,8 +654,8 @@ METHOD(database_t, execute, int,
 	char **param_values = NULL;
 	int *param_lengths = NULL;
 	int *param_formats = NULL;
-
 	bool *param_is_libpq = NULL;
+	bool param_error = FALSE;
 
 	if (param_count > 0)
 	{
@@ -677,9 +719,42 @@ METHOD(database_t, execute, int,
 					break;
 				}
 				default:
+					DBG1(DBG_LIB, "invalid parameter type %d", type);
+					param_error = TRUE;
 					break;
 			}
+			if (param_error)
+			{
+				break;
+			}
 		}
+	}
+
+	/* Abort on parameter error - cleanup allocated memory */
+	if (param_error)
+	{
+		for (int i = 0; i < param_count && param_values; i++)
+		{
+			if (param_values[i])
+			{
+				if (param_is_libpq && param_is_libpq[i])
+				{
+					PQfreemem(param_values[i]);
+				}
+				else
+				{
+					free(param_values[i]);
+				}
+			}
+		}
+		free(param_values);
+		free(param_lengths);
+		free(param_formats);
+		free(param_is_libpq);
+		free(pgsql);
+		va_end(args);
+		conn_release(this, conn);
+		return -1;
 	}
 
 	/* For INSERT with RETURNING id */
