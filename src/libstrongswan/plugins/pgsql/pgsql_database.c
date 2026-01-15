@@ -56,10 +56,6 @@ struct private_pgsql_database_t {
 	 */
 	char *conninfo;
 
-	/**
-	 * Prepared statement counter for unique names
-	 */
-	int stmt_counter;
 };
 
 typedef struct conn_t conn_t;
@@ -617,11 +613,14 @@ METHOD(database_t, execute, int,
 	int *param_lengths = NULL;
 	int *param_formats = NULL;
 
+	bool *param_is_libpq = NULL;
+
 	if (param_count > 0)
 	{
 		param_values = calloc(param_count, sizeof(char*));
 		param_lengths = calloc(param_count, sizeof(int));
 		param_formats = calloc(param_count, sizeof(int));
+		param_is_libpq = calloc(param_count, sizeof(bool));
 
 		for (int i = 0; i < param_count; i++)
 		{
@@ -657,6 +656,7 @@ METHOD(database_t, execute, int,
 						size_t escaped_len;
 						param_values[i] = (char*)PQescapeByteaConn(
 							conn->conn, val.ptr, val.len, &escaped_len);
+						param_is_libpq[i] = TRUE;
 					}
 					else
 					{
@@ -704,19 +704,26 @@ METHOD(database_t, execute, int,
 		free(exec_sql);
 	}
 
-	/* Free parameters */
+	/* Free parameters using appropriate deallocator */
 	for (int i = 0; i < param_count; i++)
 	{
 		if (param_values[i])
 		{
-			/* Check if it was allocated by PQescapeByteaConn */
-			/* For simplicity, we just free all non-NULL values */
-			free(param_values[i]);
+			if (param_is_libpq[i])
+			{
+				/* Memory from PQescapeByteaConn must use PQfreemem */
+				PQfreemem(param_values[i]);
+			}
+			else
+			{
+				free(param_values[i]);
+			}
 		}
 	}
 	free(param_values);
 	free(param_lengths);
 	free(param_formats);
+	free(param_is_libpq);
 	free(pgsql);
 
 	ExecStatusType status = PQresultStatus(result);
