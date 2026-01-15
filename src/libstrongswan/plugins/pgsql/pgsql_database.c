@@ -19,11 +19,37 @@
 #include <stdio.h>
 #include <libpq-fe.h>
 
+#include <ctype.h>
+
 #include <utils/debug.h>
 #include <utils/chunk.h>
 #include <threading/thread_value.h>
 #include <threading/mutex.h>
 #include <collections/linked_list.h>
+
+/**
+ * Portable case-insensitive substring search.
+ * Avoids dependency on GNU strcasestr for portability to non-glibc systems.
+ */
+static char *pgsql_strcasestr(const char *haystack, const char *needle)
+{
+	size_t needle_len;
+
+	if (!needle || !*needle)
+	{
+		return (char*)haystack;
+	}
+	needle_len = strlen(needle);
+	while (*haystack)
+	{
+		if (strncasecmp(haystack, needle, needle_len) == 0)
+		{
+			return (char*)haystack;
+		}
+		haystack++;
+	}
+	return NULL;
+}
 
 typedef struct private_pgsql_database_t private_pgsql_database_t;
 
@@ -943,7 +969,7 @@ METHOD(database_t, execute, int,
 		 * Note: This assumes the primary key column is named 'id',
 		 * which matches strongSwan's SQL schema convention.
 		 * MySQL uses mysql_stmt_insert_id() which doesn't need column name. */
-		if (!strcasestr(pgsql, "RETURNING"))
+		if (!pgsql_strcasestr(pgsql, "RETURNING"))
 		{
 			size_t len = strlen(pgsql) + 20;
 			exec_sql = malloc(len);
