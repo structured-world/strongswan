@@ -181,7 +181,6 @@ ARG_ENABL_SET([unbound],        [enable UNBOUND resolver plugin to perform DNS q
 ARG_ENABL_SET([winhttp],        [enable WinHTTP based HTTP/HTTPS fetching plugin.])
 # database plugins
 ARG_ENABL_SET([mysql],          [enable MySQL database support. Requires libmysqlclient_r.])
-ARG_ENABL_SET([pgsql],          [enable PostgreSQL database support. Requires libpq.])
 ARG_ENABL_SET([sqlite],         [enable SQLite database support. Requires libsqlite3.])
 # authentication/credential plugins
 ARG_ENABL_SET([addrblock],      [enables RFC 3779 address block constraint support.])
@@ -1168,11 +1167,6 @@ if test x$mysql = xtrue; then
 	fi
 fi
 
-if test x$pgsql = xtrue; then
-	PKG_CHECK_MODULES([PGSQL], [libpq], [],
-		[AC_MSG_ERROR([libpq not found. Install libpq-dev.])])
-fi
-
 if test x$sqlite = xtrue; then
 	AC_CHECK_LIB([sqlite3],[sqlite3_open],[LIBS="$LIBS"],[AC_MSG_ERROR([SQLite library sqlite3 not found])],[])
 	AC_CHECK_HEADER([sqlite3.h],,[AC_MSG_ERROR([SQLite header sqlite3.h not found!])])
@@ -1603,7 +1597,6 @@ ADD_PLUGIN([files],                [s charon pki scripts nm cmd])
 ADD_PLUGIN([winhttp],              [s charon pki scripts])
 ADD_PLUGIN([soup],                 [s charon pki scripts nm cmd])
 ADD_PLUGIN([mysql],                [s charon pki pool manager medsrv attest])
-ADD_PLUGIN([pgsql],                [s charon pki pool manager medsrv attest])
 ADD_PLUGIN([sqlite],               [s charon pki pool manager medsrv attest])
 ADD_PLUGIN([openxpki],             [s pki])
 ADD_PLUGIN([attr],                 [c charon])
@@ -1749,7 +1742,6 @@ AM_CONDITIONAL(USE_KDF, test x$kdf = xtrue)
 AM_CONDITIONAL(USE_CMAC, test x$cmac = xtrue)
 AM_CONDITIONAL(USE_XCBC, test x$xcbc = xtrue)
 AM_CONDITIONAL(USE_MYSQL, test x$mysql = xtrue)
-AM_CONDITIONAL(USE_PGSQL, test x$pgsql = xtrue)
 AM_CONDITIONAL(USE_SQLITE, test x$sqlite = xtrue)
 AM_CONDITIONAL(USE_PADLOCK, test x$padlock = xtrue)
 AM_CONDITIONAL(USE_OPENSSL, test x$openssl = xtrue)
@@ -2032,7 +2024,6 @@ AC_CONFIG_FILES([
 	src/libstrongswan/plugins/soup/Makefile
 	src/libstrongswan/plugins/ldap/Makefile
 	src/libstrongswan/plugins/mysql/Makefile
-	src/libstrongswan/plugins/pgsql/Makefile
 	src/libstrongswan/plugins/sqlite/Makefile
 	src/libstrongswan/plugins/padlock/Makefile
 	src/libstrongswan/plugins/openssl/Makefile
