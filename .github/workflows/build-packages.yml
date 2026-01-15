@@ -167,10 +167,18 @@ jobs:
           mkdir -p "${PGSQL_PKGDIR}/usr/lib/ipsec/plugins"
           mkdir -p "${PGSQL_PKGDIR}/etc/strongswan.d/charon"
 
-          # Copy pgsql plugin
+          # Copy pgsql plugin - try known locations, then search
           cp -a "${PKGDIR}/usr/lib/ipsec/plugins/libstrongswan-pgsql.so" "${PGSQL_PKGDIR}/usr/lib/ipsec/plugins/" 2>/dev/null || \
           cp -a "${PKGDIR}/usr/lib/strongswan/plugins/libstrongswan-pgsql.so" "${PGSQL_PKGDIR}/usr/lib/ipsec/plugins/" 2>/dev/null || \
           find "${PKGDIR}" -name "libstrongswan-pgsql.so" -exec cp {} "${PGSQL_PKGDIR}/usr/lib/ipsec/plugins/" \;
+
+          # Verify the plugin was copied successfully
+          if [ ! -f "${PGSQL_PKGDIR}/usr/lib/ipsec/plugins/libstrongswan-pgsql.so" ]; then
+            echo "ERROR: PostgreSQL plugin not found in build output"
+            echo "Searched locations:"
+            find "${PKGDIR}" -name "*.so" -path "*/plugins/*" | head -20
+            exit 1
+          fi
 
           cat > "${PGSQL_PKGDIR}/DEBIAN/control" << EOF
           Package: strongswan-pgsql

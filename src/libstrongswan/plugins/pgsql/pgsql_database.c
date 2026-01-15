@@ -239,10 +239,11 @@ static conn_t *conn_get(private_pgsql_database_t *this, transaction_t **trans)
  */
 static char *convert_sql(const char *sql, int *param_count)
 {
-	int count = 0;
+	int count = 0, param_num = 0;
 	const char *src = sql;
 	char *result, *dst;
 	size_t len = strlen(sql);
+	size_t remaining;
 
 	/* First pass: count placeholders */
 	while (*src)
@@ -266,13 +267,16 @@ static char *convert_sql(const char *sql, int *param_count)
 	/* Second pass: convert */
 	src = sql;
 	dst = result;
-	int param_num = 0;
+	remaining = len + count * 5 + 1;
 	while (*src)
 	{
 		if (*src == '?')
 		{
+			int written;
 			param_num++;
-			dst += sprintf(dst, "$%d", param_num);
+			written = snprintf(dst, remaining, "$%d", param_num);
+			dst += written;
+			remaining -= written;
 		}
 		else
 		{
@@ -435,7 +439,7 @@ METHOD(database_t, query, enumerator_t*,
 	va_list args;
 	conn_t *conn;
 	pgsql_enumerator_t *enumerator = NULL;
-	int param_count;
+	int param_count, ncols;
 	char *pgsql;
 	PGresult *result;
 
@@ -611,7 +615,7 @@ METHOD(database_t, query, enumerator_t*,
 	}
 
 	/* Create enumerator */
-	int ncols = PQnfields(result);
+	ncols = PQnfields(result);
 	INIT(enumerator,
 		.public = {
 			.enumerate = enumerator_enumerate_default,
