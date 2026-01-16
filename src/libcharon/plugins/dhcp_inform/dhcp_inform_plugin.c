@@ -75,6 +75,7 @@ METHOD(plugin_t, get_features, int,
 METHOD(plugin_t, destroy, void,
 	private_dhcp_inform_plugin_t *this)
 {
+	DESTROY_IF(this->responder);
 	free(this);
 }
 

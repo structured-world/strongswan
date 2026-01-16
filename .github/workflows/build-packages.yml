@@ -235,7 +235,7 @@ jobs:
           Section: net
           Priority: optional
           Architecture: ${ARCH}
-          Depends: strongswan (>= 6.0) | strongswan-sw
+          Depends: strongswan (>= 6.0) | strongswan-sw, strongswan-pgsql
           Maintainer: Structured World Foundation <dev@sw.foundation>
           Homepage: https://github.com/structured-world/strongswan
           Description: DHCP INFORM responder plugin for strongSwan
@@ -503,6 +503,7 @@ jobs:
             Source0:        strongswan-dhcp-inform-%{pkg_version}.tar.gz
 
             Requires:       (strongswan >= 6.0 or strongswan-sw)
+            Requires:       strongswan-pgsql
 
             %description
             Responds to Windows DHCPINFORM requests with split-tunnel routes

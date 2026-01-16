@@ -343,6 +343,7 @@ static chunk_t encode_classless_routes(linked_list_t *routes, uint32_t gateway)
 	}
 	ptr = encoded.ptr;
 
+	uint8_t *ptr_end = encoded.ptr + encoded.len;
 	enumerator = routes->create_enumerator(routes);
 	while (enumerator->enumerate(enumerator, &ts))
 	{
@@ -354,6 +355,13 @@ static chunk_t encode_classless_routes(linked_list_t *routes, uint32_t gateway)
 		ts->to_subnet(ts, &net, &prefix);
 		net_chunk = net->get_address(net);
 		subnet_bytes = (prefix + 7) / 8;
+
+		/* Bounds check: 1 (prefix) + subnet_bytes + 4 (gateway) */
+		if (ptr + 1 + subnet_bytes + 4 > ptr_end)
+		{
+			net->destroy(net);
+			break;
+		}
 
 		*ptr++ = prefix;
 
@@ -369,6 +377,9 @@ static chunk_t encode_classless_routes(linked_list_t *routes, uint32_t gateway)
 		net->destroy(net);
 	}
 	enumerator->destroy(enumerator);
+
+	/* Adjust actual length if we stopped early */
+	encoded.len = ptr - encoded.ptr;
 
 	return encoded;
 }
@@ -575,7 +586,15 @@ static void send_dhcp_ack(private_dhcp_inform_responder_t *this,
 	/* Always free routes_encoded (chunk_free handles chunk_empty) */
 	chunk_free(&routes_encoded);
 
-	*opt++ = DHCP_OPT_END;
+	if (opt < opt_end)
+	{
+		*opt++ = DHCP_OPT_END;
+	}
+	else
+	{
+		DBG1(DBG_NET, "dhcp-inform: no space for END option in buffer");
+		return;
+	}
 
 	/* Calculate lengths */
 	dhcp_len = sizeof(dhcp_packet_t);
@@ -636,6 +655,12 @@ static void process_dhcp_packet(private_dhcp_inform_responder_t *this,
 	char client_ip_str[INET_ADDRSTRLEN];
 
 	if (len < sizeof(struct iphdr))
+	{
+		return;
+	}
+
+	/* Validate IP header length field (ihl is in 32-bit words, valid range 5-15) */
+	if (ip->ihl < 5 || ip->ihl > 15)
 	{
 		return;
 	}
