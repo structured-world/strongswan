@@ -4,11 +4,12 @@ name: "CodeQL"
 # Scoped to our fork-specific changes only
 on:
   push:
-    branches: [sw]
+    branches: [sw, 'feature/**', 'feat/**', 'fix/**']
     paths:
       - 'src/libstrongswan/plugins/pgsql/**'
       - 'src/libstrongswan/database/**'
       - 'src/libstrongswan/networking/streams/stream_service_unix.c'
+      - 'src/libcharon/plugins/dhcp_inform/**'
       - 'configure.ac'
   pull_request:
     branches: [sw]
@@ -16,6 +17,7 @@ on:
       - 'src/libstrongswan/plugins/pgsql/**'
       - 'src/libstrongswan/database/**'
       - 'src/libstrongswan/networking/streams/stream_service_unix.c'
+      - 'src/libcharon/plugins/dhcp_inform/**'
       - 'configure.ac'
 
 concurrency:
@@ -48,6 +50,7 @@ jobs:
             - src/libstrongswan/plugins/pgsql
             - src/libstrongswan/database
             - src/libstrongswan/networking/streams/stream_service_unix.c
+            - src/libcharon/plugins/dhcp_inform
           query-filters:
             - exclude:
                 id: cpp/fixme-comment
@@ -70,9 +73,11 @@ jobs:
           --enable-sql \
           --enable-vici \
           --enable-systemd \
-          --enable-openssl
-        # Only build libstrongswan (contains our changes)
+          --enable-openssl \
+          --enable-dhcp-inform
+        # Build libstrongswan and libcharon (contain our changes)
         make -C src/libstrongswan -j$(nproc)
+        make -C src/libcharon -j$(nproc)
 
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@v3
