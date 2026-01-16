@@ -530,6 +530,13 @@ if MONOLITHIC
 endif
 endif
 
+if USE_DHCP_INFORM
+  SUBDIRS += plugins/dhcp_inform
+if MONOLITHIC
+  libcharon_la_LIBADD += plugins/dhcp_inform/libstrongswan-dhcp-inform.la
+endif
+endif
+
 if USE_OSX_ATTR
   SUBDIRS += plugins/osx_attr
 if MONOLITHIC

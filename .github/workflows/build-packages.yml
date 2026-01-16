@@ -136,7 +136,9 @@ jobs:
             --enable-gcrypt \
             --enable-farp \
             --enable-dhcp \
+            --enable-dhcp-inform \
             --enable-attr-sql \
+            --enable-forecast \
             --disable-static
 
           make -j$(nproc)
@@ -163,14 +165,15 @@ jobs:
           Architecture: ${ARCH}
           Depends: libgmp10, ${LIBSSL}, libcurl4, libsystemd0, libcap2, libpam0g, ${LIBLDAP}, libsqlite3-0, libgcrypt20
           Conflicts: strongswan, strongswan-charon, strongswan-starter
+          Provides: strongswan (= ${VERSION})
           Replaces: strongswan, strongswan-charon, strongswan-starter
           Maintainer: Structured World Foundation <dev@sw.foundation>
           Homepage: https://github.com/structured-world/strongswan
-          Description: strongSwan IPsec (SW fork with pgsql support)
+          Description: strongSwan IPsec (SW fork) - drop-in replacement
            strongSwan is a complete IPsec implementation for Linux.
-           This is the Structured World fork with:
-           - Socket permissions fix (umask 0660 for Unix sockets)
-           - PostgreSQL database plugin for SQL authentication
+           This is the Structured World Foundation fork with socket permissions
+           fix (umask 0660 for Unix sockets). Drop-in replacement for system
+           strongswan package.
           EOF
 
           fakeroot dpkg-deb --build "${PKGDIR}"
@@ -198,15 +201,52 @@ jobs:
           Section: net
           Priority: optional
           Architecture: ${ARCH}
-          Depends: strongswan-sw (= ${VERSION}), libpq5
+          Depends: strongswan (>= 6.0) | strongswan-sw, libpq5
           Maintainer: Structured World Foundation <dev@sw.foundation>
           Homepage: https://github.com/structured-world/strongswan
-          Description: PostgreSQL plugin for strongSwan (SW fork)
+          Description: PostgreSQL plugin for strongSwan
            PostgreSQL database backend for strongSwan SQL plugin.
            Enables storing VPN user credentials and configuration in PostgreSQL.
+           Works with system strongswan (>= 6.0) or strongswan-sw.
           EOF
 
           fakeroot dpkg-deb --build "${PGSQL_PKGDIR}"
+
+          # DHCP-Inform plugin package
+          DHCP_INFORM_PKGDIR="strongswan-dhcp-inform_${VERSION}_${DIST}_${ARCH}"
+          mkdir -p "${DHCP_INFORM_PKGDIR}/DEBIAN"
+          mkdir -p "${DHCP_INFORM_PKGDIR}/usr/lib/ipsec/plugins"
+
+          # Copy dhcp-inform plugin to separate package, remove from main package
+          DHCP_INFORM_SO=$(find "${PKGDIR}" -name "libstrongswan-dhcp-inform.so" -type f | head -1)
+          if [ -n "$DHCP_INFORM_SO" ]; then
+            cp -a "$DHCP_INFORM_SO" "${DHCP_INFORM_PKGDIR}/usr/lib/ipsec/plugins/"
+            rm -f "$DHCP_INFORM_SO"
+            echo "Found dhcp-inform plugin: $DHCP_INFORM_SO"
+          else
+            echo "WARNING: dhcp-inform plugin not found in build output"
+            echo "Available plugins:"
+            find "${PKGDIR}" -name "*.so" -path "*/plugins/*" | head -20
+          fi
+
+          cat > "${DHCP_INFORM_PKGDIR}/DEBIAN/control" << EOF
+          Package: strongswan-dhcp-inform
+          Version: ${VERSION}
+          Section: net
+          Priority: optional
+          Architecture: ${ARCH}
+          Depends: strongswan (>= 6.0) | strongswan-sw, strongswan-pgsql
+          Maintainer: Structured World Foundation <dev@sw.foundation>
+          Homepage: https://github.com/structured-world/strongswan
+          Description: DHCP INFORM responder plugin for strongSwan
+           Responds to Windows DHCPINFORM requests with split-tunnel routes
+           from PostgreSQL database. Delivers routes via DHCP option 121/249.
+           Works with system strongswan (>= 6.0) or strongswan-sw.
+          EOF
+
+          if [ -n "$DHCP_INFORM_SO" ]; then
+            fakeroot dpkg-deb --build "${DHCP_INFORM_PKGDIR}"
+          fi
 
           ls -la *.deb
 
@@ -313,7 +353,9 @@ jobs:
             --enable-gcrypt \
             --enable-farp \
             --enable-dhcp \
+            --enable-dhcp-inform \
             --enable-attr-sql \
+            --enable-forecast \
             --disable-static
 
           make -j$(nproc)
@@ -337,6 +379,14 @@ jobs:
             mv "$PGSQL_SO" pgsql-plugin${PGSQL_SO_PATH}/
           fi
 
+          # Remove dhcp-inform plugin from main package (will be in separate RPM)
+          DHCP_INFORM_SO=$(find "${MAIN_PKGDIR}" -name "libstrongswan-dhcp-inform.so" -type f | head -1)
+          if [ -n "$DHCP_INFORM_SO" ]; then
+            DHCP_INFORM_SO_PATH=$(dirname "$DHCP_INFORM_SO" | sed "s|${MAIN_PKGDIR}||")
+            mkdir -p dhcp-inform-plugin${DHCP_INFORM_SO_PATH}
+            mv "$DHCP_INFORM_SO" dhcp-inform-plugin${DHCP_INFORM_SO_PATH}/
+          fi
+
           # Setup rpmbuild structure
           mkdir -p ~/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
 
@@ -350,7 +400,7 @@ jobs:
           Name:           strongswan-sw
           Version:        %{pkg_version}
           Release:        1.sw%{?dist}
-          Summary:        strongSwan IPsec (SW fork with pgsql support)
+          Summary:        strongSwan IPsec (SW fork) - drop-in replacement
 
           License:        GPLv2+
           URL:            https://github.com/structured-world/strongswan
@@ -366,13 +416,14 @@ jobs:
           Requires:       sqlite-libs
           Requires:       libgcrypt
 
+          Provides:       strongswan = %{pkg_version}
           Conflicts:      strongswan
 
           %description
           strongSwan is a complete IPsec implementation for Linux.
-          This is the Structured World Foundation fork with:
-          - Socket permissions fix (umask 0660 for Unix sockets)
-          - PostgreSQL database plugin for SQL authentication
+          This is the Structured World Foundation fork with socket permissions
+          fix (umask 0660 for Unix sockets). Drop-in replacement for system
+          strongswan package.
 
           %prep
           %setup -q
@@ -396,7 +447,7 @@ jobs:
           # Create pgsql plugin tarball
           tar czf ~/rpmbuild/SOURCES/strongswan-pgsql-${VERSION}.tar.gz pgsql-plugin
 
-          # Plugin package spec
+          # PostgreSQL plugin package spec
           cat > ~/rpmbuild/SPECS/strongswan-pgsql.spec << 'SPEC_EOF'
           %global debug_package %{nil}
 
@@ -409,12 +460,13 @@ jobs:
           URL:            https://github.com/structured-world/strongswan
           Source0:        strongswan-pgsql-%{pkg_version}.tar.gz
 
-          Requires:       strongswan-sw = %{pkg_version}
+          Requires:       (strongswan >= 6.0 or strongswan-sw)
           Requires:       libpq
 
           %description
           PostgreSQL database backend for strongSwan SQL plugin.
           Enables storing VPN user credentials and configuration in PostgreSQL.
+          Works with system strongswan (>= 6.0) or strongswan-sw.
 
           %prep
           %setup -q -n pgsql-plugin
@@ -433,6 +485,49 @@ jobs:
           rpmbuild -bb ~/rpmbuild/SPECS/strongswan-pgsql.spec \
             --define "pkg_version ${VERSION}" \
             --define "_topdir $HOME/rpmbuild"
+
+          # DHCP-Inform plugin package
+          if [ -d "dhcp-inform-plugin" ]; then
+            tar czf ~/rpmbuild/SOURCES/strongswan-dhcp-inform-${VERSION}.tar.gz dhcp-inform-plugin
+
+            cat > ~/rpmbuild/SPECS/strongswan-dhcp-inform.spec << 'SPEC_EOF'
+            %global debug_package %{nil}
+
+            Name:           strongswan-dhcp-inform
+            Version:        %{pkg_version}
+            Release:        1.sw%{?dist}
+            Summary:        DHCP INFORM responder plugin for strongSwan
+
+            License:        GPLv2+
+            URL:            https://github.com/structured-world/strongswan
+            Source0:        strongswan-dhcp-inform-%{pkg_version}.tar.gz
+
+            Requires:       (strongswan >= 6.0 or strongswan-sw)
+            Requires:       strongswan-pgsql
+
+            %description
+            Responds to Windows DHCPINFORM requests with split-tunnel routes
+            from PostgreSQL database. Delivers routes via DHCP option 121/249.
+            Works with system strongswan (>= 6.0) or strongswan-sw.
+
+            %prep
+            %setup -q -n dhcp-inform-plugin
+
+            %install
+            cp -a * %{buildroot}/
+
+            %files
+            /usr/lib64/ipsec/plugins/libstrongswan-dhcp-inform.so
+
+            %changelog
+            * %(date "+%a %b %d %Y") SW Foundation <dev@sw.foundation> - %{pkg_version}-1.sw
+            - DHCP INFORM responder plugin for strongSwan
+            SPEC_EOF
+
+            rpmbuild -bb ~/rpmbuild/SPECS/strongswan-dhcp-inform.spec \
+              --define "pkg_version ${VERSION}" \
+              --define "_topdir $HOME/rpmbuild"
+          fi
 
           # Copy RPMs to workspace
           mkdir -p rpms
