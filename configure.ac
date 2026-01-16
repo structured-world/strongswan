@@ -240,6 +240,7 @@ ARG_ENABL_SET([android-dns],    [enable Android specific DNS handler.])
 ARG_DISBL_SET([attr],           [disable strongswan.conf based configuration attribute plugin.])
 ARG_ENABL_SET([attr-sql],       [enable SQL based configuration attribute plugin.])
 ARG_ENABL_SET([dhcp],           [enable DHCP based attribute provider plugin.])
+ARG_ENABL_SET([dhcp-inform],    [enable DHCP INFORM responder plugin for Windows split-tunnel routes.])
 ARG_ENABL_SET([osx-attr],       [enable OS X SystemConfiguration attribute handler.])
 ARG_ENABL_SET([p-cscf],         [enable plugin to request P-CSCF server addresses from an ePDG.])
 ARG_DISBL_SET([resolve],        [disable resolve DNS handler plugin.])
@@ -1664,6 +1665,7 @@ ADD_PLUGIN([tnccs-dynamic],        [t charon])
 ADD_PLUGIN([medsrv],               [c charon])
 ADD_PLUGIN([medcli],               [c charon])
 ADD_PLUGIN([dhcp],                 [c charon])
+ADD_PLUGIN([dhcp-inform],          [c charon])
 ADD_PLUGIN([osx-attr],             [c charon cmd])
 ADD_PLUGIN([p-cscf],               [c charon cmd])
 ADD_PLUGIN([android-dns],          [c charon])
@@ -1784,6 +1786,7 @@ AM_CONDITIONAL(USE_DNSCERT, test x$dnscert = xtrue)
 AM_CONDITIONAL(USE_IPSECKEY, test x$ipseckey = xtrue)
 AM_CONDITIONAL(USE_UPDOWN, test x$updown = xtrue)
 AM_CONDITIONAL(USE_DHCP, test x$dhcp = xtrue)
+AM_CONDITIONAL(USE_DHCP_INFORM, test x$dhcp_inform = xtrue)
 AM_CONDITIONAL(USE_LOAD_TESTER, test x$load_tester = xtrue)
 AM_CONDITIONAL(USE_HA, test x$ha = xtrue)
 AM_CONDITIONAL(USE_KERNEL_NETLINK, test x$kernel_netlink = xtrue)
@@ -2157,6 +2160,7 @@ AC_CONFIG_FILES([
 	src/libcharon/plugins/vici/python/Makefile
 	src/libcharon/plugins/updown/Makefile
 	src/libcharon/plugins/dhcp/Makefile
+	src/libcharon/plugins/dhcp_inform/Makefile
 	src/libcharon/plugins/load_tester/Makefile
 	src/libcharon/plugins/resolve/Makefile
 	src/libcharon/plugins/attr/Makefile
