@@ -1,23 +1,69 @@
-name: Sync with Upstream
+name: Sync with Upstream Release
 
 on:
+  # Check for new upstream releases daily
   schedule:
-    # Run weekly on Monday at 00:00 UTC
-    - cron: '0 0 * * 1'
+    - cron: '0 6 * * *'
   workflow_dispatch:
     inputs:
-      force_rebase:
-        description: 'Force rebase even if no upstream changes'
+      upstream_tag:
+        description: 'Specific upstream tag to sync (e.g., 6.0.0)'
         required: false
-        default: false
-        type: boolean
+        type: string
 
 jobs:
+  check-release:
+    runs-on: ubuntu-latest
+    outputs:
+      has_new_release: ${{ steps.check.outputs.has_new_release }}
+      upstream_tag: ${{ steps.check.outputs.upstream_tag }}
+      upstream_version: ${{ steps.check.outputs.upstream_version }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for new upstream release
+        id: check
+        run: |
+          # Add upstream remote
+          git remote add upstream https://github.com/strongswan/strongswan.git || true
+          git fetch upstream --tags
+
+          if [ -n "${{ inputs.upstream_tag }}" ]; then
+            # Manual trigger with specific tag
+            UPSTREAM_TAG="${{ inputs.upstream_tag }}"
+          else
+            # Get latest upstream release tag (format: X.Y.Z)
+            # Use git ls-remote to only get tags from upstream, not origin
+            UPSTREAM_TAG=$(git ls-remote --tags upstream | \
+              sed -n 's|.*refs/tags/\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$|\1|p' | \
+              sort -V | tail -1)
+          fi
+
+          echo "Latest upstream tag: $UPSTREAM_TAG"
+
+          # Check if we already have this release
+          if git tag -l | grep -q "^${UPSTREAM_TAG}-sw\."; then
+            echo "Already have release based on $UPSTREAM_TAG"
+            echo "has_new_release=false" >> $GITHUB_OUTPUT
+          else
+            echo "New upstream release: $UPSTREAM_TAG"
+            echo "has_new_release=true" >> $GITHUB_OUTPUT
+            echo "upstream_tag=$UPSTREAM_TAG" >> $GITHUB_OUTPUT
+            echo "upstream_version=$UPSTREAM_TAG" >> $GITHUB_OUTPUT
+          fi
+
   sync:
+    needs: check-release
+    if: needs.check-release.outputs.has_new_release == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      pull-requests: write
+    outputs:
+      rebase_success: ${{ steps.sync.outputs.rebase_success }}
 
     steps:
       - name: Checkout
@@ -31,40 +77,25 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Add upstream remote
+      - name: Sync to upstream release
+        id: sync
         run: |
+          UPSTREAM_TAG="${{ needs.check-release.outputs.upstream_tag }}"
+
           git remote add upstream https://github.com/strongswan/strongswan.git || true
-          git fetch upstream
+          git fetch upstream --tags
 
-      - name: Check for upstream changes
-        id: check
-        run: |
-          UPSTREAM_SHA=$(git rev-parse upstream/master)
-          CURRENT_SHA=$(git rev-parse origin/master)
-
-          if [ "$UPSTREAM_SHA" = "$CURRENT_SHA" ] && [ "${{ inputs.force_rebase }}" != "true" ]; then
-            echo "No upstream changes detected"
-            echo "has_changes=false" >> $GITHUB_OUTPUT
-          else
-            echo "Upstream changes detected or force rebase requested"
-            echo "has_changes=true" >> $GITHUB_OUTPUT
-            echo "upstream_sha=$UPSTREAM_SHA" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Sync master branch
-        if: steps.check.outputs.has_changes == 'true'
-        run: |
+          # Update master to upstream release tag
+          # Force push is intentional here - master should always mirror
+          # the upstream release exactly. This repo is a fork where only
+          # the sw branch contains our modifications.
           git checkout master
-          git merge upstream/master --ff-only
-          git push origin master
+          git reset --hard "$UPSTREAM_TAG"
+          git push origin master --force
 
-      - name: Rebase sw branch
-        if: steps.check.outputs.has_changes == 'true'
-        id: rebase
-        run: |
+          # Rebase sw branch onto the release
           git checkout sw
 
-          # Try to rebase
           if git rebase master; then
             echo "Rebase successful"
             git push origin sw --force-with-lease
@@ -76,31 +107,28 @@ jobs:
           fi
 
       - name: Create issue on conflict
-        if: steps.check.outputs.has_changes == 'true' && steps.rebase.outputs.rebase_success == 'false'
+        if: steps.sync.outputs.rebase_success == 'false'
         uses: actions/github-script@v7
         with:
           script: |
-            const title = '⚠️ Upstream sync conflict detected';
+            const title = '⚠️ Upstream release sync conflict';
             const body = `## Upstream Sync Failed
 
-            The automatic rebase of the \`sw\` branch onto the updated \`master\` branch failed due to conflicts.
-
-            **Upstream commit:** ${{ steps.check.outputs.upstream_sha }}
+            Failed to rebase \`sw\` branch onto upstream release **${{ needs.check-release.outputs.upstream_tag }}**.
 
             ### Manual resolution required:
 
             \`\`\`bash
             git fetch origin
-            git fetch upstream
+            git fetch upstream --tags
             git checkout sw
-            git rebase upstream/master
+            git rebase ${{ needs.check-release.outputs.upstream_tag }}
             # Resolve conflicts
             git push origin sw --force-with-lease
             \`\`\`
 
-            Please resolve the conflicts and push the updated branch.`;
+            After resolving, manually trigger the Build Packages workflow.`;
 
-            // Check if similar issue already exists
             const issues = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -117,3 +145,12 @@ jobs:
                 labels: ['upstream-sync', 'needs-attention']
               });
             }
+
+  build:
+    needs: [check-release, sync]
+    if: needs.check-release.outputs.has_new_release == 'true' && needs.sync.outputs.rebase_success != 'false'
+    uses: ./.github/workflows/build-packages.yml
+    with:
+      upstream_version: ${{ needs.check-release.outputs.upstream_version }}
+    permissions:
+      contents: write
