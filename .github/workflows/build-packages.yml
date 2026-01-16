@@ -62,8 +62,9 @@ jobs:
             libssl: libssl3
             libldap: libldap-2.5-0
             arch: amd64
-          # Debian 12 uses ubuntu-latest with different packages
-          - os: ubuntu-latest
+          # Debian 12 builds on ubuntu-22.04 (similar glibc/lib versions)
+          # Note: For true Debian builds, consider using a Debian container
+          - os: ubuntu-22.04
             dist: bookworm
             libssl: libssl3
             libldap: libldap-2.5-0

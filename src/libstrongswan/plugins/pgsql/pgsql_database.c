@@ -30,6 +30,8 @@
 /**
  * Portable case-insensitive substring search.
  * Avoids dependency on GNU strcasestr for portability to non-glibc systems.
+ * Uses naive O(n*m) algorithm which is acceptable for our limited use case
+ * (searching for short keywords like "RETURNING" in SQL queries).
  */
 static char *pgsql_strcasestr(const char *haystack, const char *needle)
 {
