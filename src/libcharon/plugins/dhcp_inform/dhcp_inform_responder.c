@@ -464,6 +464,11 @@ static uint16_t udp_checksum(uint32_t src, uint32_t dst,
 }
 
 /**
+ * IP ID counter for packet identification (atomic increment for thread safety)
+ */
+static uint32_t ip_id_counter = 0;
+
+/**
  * Send DHCPACK response via raw socket
  */
 static void send_dhcp_ack(private_dhcp_inform_responder_t *this,
@@ -476,9 +481,11 @@ static void send_dhcp_ack(private_dhcp_inform_responder_t *this,
 		dhcp_packet_t dhcp;
 	} pkt;
 	uint8_t *opt;
-	chunk_t routes_encoded;
+	uint8_t *opt_end;
+	chunk_t routes_encoded = chunk_empty;
 	struct sockaddr_in dest;
 	size_t dhcp_len, udp_len, total_len;
+	size_t required_space;
 
 	memset(&pkt, 0, sizeof(pkt));
 
@@ -494,6 +501,7 @@ static void send_dhcp_ack(private_dhcp_inform_responder_t *this,
 	pkt.dhcp.magic = htonl(DHCP_MAGIC_COOKIE);
 
 	opt = pkt.dhcp.options;
+	opt_end = pkt.dhcp.options + sizeof(pkt.dhcp.options);
 
 	/* Message Type = DHCPACK */
 	*opt++ = DHCP_OPT_MESSAGE_TYPE;
@@ -515,25 +523,38 @@ static void send_dhcp_ack(private_dhcp_inform_responder_t *this,
 		opt += 4;
 	}
 
-	/* Encode routes */
-	routes_encoded = encode_classless_routes(routes, 0);
+	/* Encode routes with server_ip as gateway */
+	routes_encoded = encode_classless_routes(routes, this->server_ip);
 
 	if (routes_encoded.len > 0 && routes_encoded.len <= 255)
 	{
-		/* Option 121 - RFC 3442 */
-		*opt++ = DHCP_OPT_CLASSLESS_ROUTES;
-		*opt++ = routes_encoded.len;
-		memcpy(opt, routes_encoded.ptr, routes_encoded.len);
-		opt += routes_encoded.len;
+		/* Calculate required space: 2 options * (2 byte header + data) + END */
+		required_space = 2 * (2 + routes_encoded.len) + 1;
 
-		/* Option 249 - Microsoft */
-		*opt++ = DHCP_OPT_MS_CLASSLESS_ROUTES;
-		*opt++ = routes_encoded.len;
-		memcpy(opt, routes_encoded.ptr, routes_encoded.len);
-		opt += routes_encoded.len;
+		if (opt + required_space <= opt_end)
+		{
+			/* Option 121 - RFC 3442 */
+			*opt++ = DHCP_OPT_CLASSLESS_ROUTES;
+			*opt++ = routes_encoded.len;
+			memcpy(opt, routes_encoded.ptr, routes_encoded.len);
+			opt += routes_encoded.len;
 
-		chunk_free(&routes_encoded);
+			/* Option 249 - Microsoft */
+			*opt++ = DHCP_OPT_MS_CLASSLESS_ROUTES;
+			*opt++ = routes_encoded.len;
+			memcpy(opt, routes_encoded.ptr, routes_encoded.len);
+			opt += routes_encoded.len;
+		}
+		else
+		{
+			DBG1(DBG_NET, "dhcp-inform: routes too large for options buffer "
+				 "(%zu bytes needed, %zu available)", required_space,
+				 (size_t)(opt_end - opt));
+		}
 	}
+
+	/* Always free routes_encoded (chunk_free handles chunk_empty) */
+	chunk_free(&routes_encoded);
 
 	*opt++ = DHCP_OPT_END;
 
@@ -547,7 +568,7 @@ static void send_dhcp_ack(private_dhcp_inform_responder_t *this,
 	pkt.ip.ihl = 5;
 	pkt.ip.tos = 0;
 	pkt.ip.tot_len = htons(total_len);
-	pkt.ip.id = htons(rand() & 0xFFFF);
+	pkt.ip.id = htons(__sync_fetch_and_add(&ip_id_counter, 1) & 0xFFFF);
 	pkt.ip.frag_off = 0;
 	pkt.ip.ttl = 64;
 	pkt.ip.protocol = IPPROTO_UDP;
@@ -657,7 +678,7 @@ static void process_dhcp_packet(private_dhcp_inform_responder_t *this,
 	if (routes->get_count(routes) > 0)
 	{
 		DBG1(DBG_NET, "dhcp-inform: sending DHCPACK with %d routes", routes->get_count(routes));
-		send_dhcp_ack(this, dhcp, routes, ip->saddr);
+		send_dhcp_ack(this, dhcp, routes, dhcp->ciaddr);
 	}
 	else
 	{
