@@ -134,76 +134,6 @@ struct private_dhcp_inform_responder_t {
 };
 
 /**
- * Find IKE_SA by virtual IP address
- */
-static ike_sa_t *find_ike_sa_by_vip(uint32_t vip_addr)
-{
-	ike_sa_t *ike_sa = NULL;
-	enumerator_t *enumerator;
-	host_t *vip;
-	struct sockaddr_in addr = {
-		.sin_family = AF_INET,
-		.sin_addr.s_addr = vip_addr,
-	};
-
-	vip = host_create_from_sockaddr((sockaddr_t*)&addr);
-	if (!vip)
-	{
-		return NULL;
-	}
-
-	enumerator = charon->controller->create_ike_sa_enumerator(
-						charon->controller, TRUE);
-	while (enumerator->enumerate(enumerator, &ike_sa))
-	{
-		enumerator_t *vip_enum;
-		host_t *ike_vip;
-
-		vip_enum = ike_sa->create_virtual_ip_enumerator(ike_sa, FALSE);
-		while (vip_enum->enumerate(vip_enum, &ike_vip))
-		{
-			if (vip->ip_equals(vip, ike_vip))
-			{
-				vip_enum->destroy(vip_enum);
-				enumerator->destroy(enumerator);
-				vip->destroy(vip);
-				return ike_sa;
-			}
-		}
-		vip_enum->destroy(vip_enum);
-	}
-	enumerator->destroy(enumerator);
-	vip->destroy(vip);
-
-	return NULL;
-}
-
-/**
- * Resolve FQDN to IPv4 address.
- */
-static uint32_t resolve_fqdn(const char *fqdn)
-{
-	struct addrinfo hints, *res;
-	uint32_t ip_addr = 0;
-
-	memset(&hints, 0, sizeof(hints));
-	hints.ai_family = AF_INET;
-	hints.ai_socktype = SOCK_STREAM;
-
-	if (getaddrinfo(fqdn, NULL, &hints, &res) == 0)
-	{
-		if (res->ai_family == AF_INET)
-		{
-			struct sockaddr_in *sin = (struct sockaddr_in*)res->ai_addr;
-			ip_addr = sin->sin_addr.s_addr;
-		}
-		freeaddrinfo(res);
-	}
-
-	return ip_addr;
-}
-
-/**
  * Parse CIDR notation with validation
  */
 static traffic_selector_t *parse_cidr(const char *cidr)
@@ -365,92 +295,6 @@ static linked_list_t *get_routes_by_ip(private_dhcp_inform_responder_t *this,
 
 	DBG1(DBG_NET, "dhcp-inform: found %d valid routes for %s",
 		 routes->get_count(routes), client_ip);
-	return routes;
-}
-
-/**
- * Get routes from database for identity
- */
-static linked_list_t *get_routes_from_db(private_dhcp_inform_responder_t *this,
-										 identification_t *id)
-{
-	linked_list_t *routes;
-	enumerator_t *enumerator;
-	chunk_t id_data;
-	char *identity_str = NULL;
-	char *resource_type, *resource_value;
-
-	routes = linked_list_create();
-
-	if (!this->db)
-	{
-		return routes;
-	}
-
-	id_data = id->get_encoding(id);
-	identity_str = malloc(id_data.len + 1);
-	memcpy(identity_str, id_data.ptr, id_data.len);
-	identity_str[id_data.len] = '\0';
-
-	char *at = strchr(identity_str, '@');
-	if (at)
-	{
-		*at = '\0';
-	}
-
-	DBG1(DBG_NET, "dhcp-inform: looking up routes for identity: %s", identity_str);
-
-	enumerator = this->db->query(this->db,
-		"SELECT resource_type, resource_value FROM v_user_routes WHERE identity = ?",
-		DB_TEXT, identity_str,
-		DB_TEXT, DB_TEXT);
-
-	if (!enumerator)
-	{
-		DBG1(DBG_NET, "dhcp-inform: failed to query v_user_routes");
-		free(identity_str);
-		return routes;
-	}
-
-	while (enumerator->enumerate(enumerator, &resource_type, &resource_value))
-	{
-		traffic_selector_t *ts = NULL;
-
-		if (strcmp(resource_type, "ip") == 0)
-		{
-			host_t *host = host_create_from_string(resource_value, 0);
-			if (host)
-			{
-				ts = traffic_selector_create_from_subnet(host, 32, 0, 0, 65535);
-			}
-		}
-		else if (strcmp(resource_type, "cidr") == 0)
-		{
-			ts = parse_cidr(resource_value);
-		}
-		else if (strcmp(resource_type, "fqdn") == 0)
-		{
-			uint32_t ip_addr = resolve_fqdn(resource_value);
-			if (ip_addr != 0)
-			{
-				host_t *host = host_create_from_chunk(AF_INET,
-					chunk_create((char*)&ip_addr, 4), 0);
-				if (host)
-				{
-					ts = traffic_selector_create_from_subnet(host, 32, 0, 0, 65535);
-				}
-			}
-		}
-
-		if (ts)
-		{
-			routes->insert_last(routes, ts);
-			DBG1(DBG_NET, "dhcp-inform: added route %R", ts);
-		}
-	}
-	enumerator->destroy(enumerator);
-	free(identity_str);
-
 	return routes;
 }
 
@@ -731,10 +575,10 @@ static void send_dhcp_ack(private_dhcp_inform_responder_t *this,
 	}
 	else
 	{
-		struct in_addr addr;
-		addr.s_addr = client_ip;
+		char ip_str[INET_ADDRSTRLEN];
+		inet_ntop(AF_INET, &client_ip, ip_str, sizeof(ip_str));
 		DBG1(DBG_NET, "dhcp-inform: sent DHCPACK to %s with %d routes",
-			 inet_ntoa(addr), routes->get_count(routes));
+			 ip_str, routes->get_count(routes));
 	}
 }
 
@@ -748,11 +592,8 @@ static void process_dhcp_packet(private_dhcp_inform_responder_t *this,
 	dhcp_packet_t *dhcp;
 	size_t ip_hdr_len, udp_len;
 	uint8_t msg_type;
-	ike_sa_t *ike_sa;
-	identification_t *peer_id;
 	linked_list_t *routes;
-	struct in_addr client_addr;
-	char id_buf[256];
+	char client_ip_str[INET_ADDRSTRLEN];
 
 	if (len < sizeof(struct iphdr))
 	{
@@ -799,20 +640,17 @@ static void process_dhcp_packet(private_dhcp_inform_responder_t *this,
 		return;
 	}
 
-	client_addr.s_addr = dhcp->ciaddr;
-	DBG1(DBG_NET, "dhcp-inform: received DHCPINFORM from %s", inet_ntoa(client_addr));
-
-	(void)ike_sa;
-	(void)peer_id;
-	(void)id_buf;
+	/* Convert client IP to string (thread-safe) */
+	inet_ntop(AF_INET, &dhcp->ciaddr, client_ip_str, sizeof(client_ip_str));
+	DBG1(DBG_NET, "dhcp-inform: received DHCPINFORM from %s", client_ip_str);
 
 	/* Get routes from database by client IP */
-	routes = get_routes_by_ip(this, inet_ntoa(client_addr));
+	routes = get_routes_by_ip(this, client_ip_str);
 
 	if (!routes)
 	{
 		DBG1(DBG_NET, "dhcp-inform: CRITICAL - failed to get routes list for %s",
-			 inet_ntoa(client_addr));
+			 client_ip_str);
 		return;
 	}
 
@@ -823,7 +661,7 @@ static void process_dhcp_packet(private_dhcp_inform_responder_t *this,
 	}
 	else
 	{
-		DBG1(DBG_NET, "dhcp-inform: no routes found for %s", inet_ntoa(client_addr));
+		DBG1(DBG_NET, "dhcp-inform: no routes found for %s", client_ip_str);
 	}
 
 	routes->destroy_offset(routes, offsetof(traffic_selector_t, destroy));
@@ -997,12 +835,23 @@ dhcp_inform_responder_t *dhcp_inform_responder_create()
 	/* Parse DNS server */
 	if (dns_server)
 	{
-		inet_pton(AF_INET, dns_server, &this->dns_server);
+		if (inet_pton(AF_INET, dns_server, &this->dns_server) != 1)
+		{
+			DBG1(DBG_NET, "dhcp-inform: invalid DNS server IP: %s", dns_server);
+			destroy(this);
+			return NULL;
+		}
 	}
 
 	if (iface)
 	{
 		this->iface = strdup(iface);
+		if (!this->iface)
+		{
+			DBG1(DBG_NET, "dhcp-inform: failed to duplicate interface name");
+			destroy(this);
+			return NULL;
+		}
 	}
 
 	/* Create packet socket for receiving broadcasts */
@@ -1045,7 +894,13 @@ dhcp_inform_responder_t *dhcp_inform_responder_create()
 				.sll_protocol = htons(ETH_P_IP),
 				.sll_ifindex = this->ifindex,
 			};
-			bind(this->pkt_fd, (struct sockaddr*)&addr, sizeof(addr));
+			if (bind(this->pkt_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0)
+			{
+				DBG1(DBG_NET, "dhcp-inform: failed to bind packet socket to %s: %s",
+					 iface, strerror(errno));
+				destroy(this);
+				return NULL;
+			}
 		}
 	}
 
