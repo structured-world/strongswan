@@ -19,6 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
+      rpm_version: ${{ steps.version.outputs.rpm_version }}
       upstream_version: ${{ steps.version.outputs.upstream_version }}
 
     steps:
@@ -35,12 +36,15 @@ jobs:
             UPSTREAM_VERSION=$(grep -m1 'AC_INIT' configure.ac | sed -E 's/.*\[([0-9]+\.[0-9]+\.[0-9]+)\].*/\1/')
           fi
 
-          # SW version: upstream-sw.N where N increments for each rebuild
+          # SW version for DEB: upstream-sw.N (dashes allowed)
           VERSION="${UPSTREAM_VERSION}-sw.1"
+          # SW version for RPM: upstream.sw.N (no dashes allowed in Version field)
+          RPM_VERSION="${UPSTREAM_VERSION}.sw.1"
 
           echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "rpm_version=$RPM_VERSION" >> $GITHUB_OUTPUT
           echo "upstream_version=$UPSTREAM_VERSION" >> $GITHUB_OUTPUT
-          echo "Building version: $VERSION (based on upstream $UPSTREAM_VERSION)"
+          echo "Building version: $VERSION / RPM: $RPM_VERSION (based on upstream $UPSTREAM_VERSION)"
 
   build-deb:
     needs: prepare
@@ -101,6 +105,13 @@ jobs:
 
       - name: Build strongSwan
         run: |
+          UPSTREAM="${{ needs.prepare.outputs.upstream_version }}"
+
+          # Create git tag to satisfy strongSwan version check
+          git config user.email "build@sw.foundation"
+          git config user.name "Build"
+          git tag -f "$UPSTREAM"
+
           autoreconf -i
           ./configure \
             --prefix=/usr \
@@ -258,12 +269,20 @@ jobs:
 
       - name: Build strongSwan
         run: |
+          UPSTREAM="${{ needs.prepare.outputs.upstream_version }}"
+
+          # Create git tag to satisfy strongSwan version check
+          git config user.email "build@sw.foundation"
+          git config user.name "Build"
+          git tag -f "$UPSTREAM"
+
           autoreconf -i
           ./configure \
             --prefix=/usr \
             --sysconfdir=/etc \
             --libdir=/usr/lib64 \
             --libexecdir=/usr/lib64 \
+            --with-systemdsystemunitdir=/usr/lib/systemd/system \
             --enable-eap-identity \
             --enable-eap-mschapv2 \
             --enable-eap-radius \
@@ -289,7 +308,7 @@ jobs:
 
       - name: Create RPM packages
         run: |
-          VERSION="${{ needs.prepare.outputs.version }}"
+          VERSION="${{ needs.prepare.outputs.rpm_version }}"
           UPSTREAM="${{ needs.prepare.outputs.upstream_version }}"
           FEDORA="${{ matrix.fedora }}"
 
