@@ -206,10 +206,6 @@ jobs:
 
           fakeroot dpkg-deb --build "${PGSQL_PKGDIR}"
 
-          # Rename to standard format
-          mv "${PKGDIR}.deb" "strongswan-sw_${VERSION}_${DIST}_${ARCH}.deb"
-          mv "${PGSQL_PKGDIR}.deb" "strongswan-pgsql_${VERSION}_${DIST}_${ARCH}.deb"
-
           ls -la *.deb
 
       - name: Upload artifacts
