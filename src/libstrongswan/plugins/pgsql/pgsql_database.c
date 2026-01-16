@@ -967,10 +967,6 @@ METHOD(database_t, execute, int,
 	if (need_returning)
 	{
 		/* Append RETURNING id if not already present */
-		/* Add RETURNING clause to get the inserted row ID.
-		 * Note: This assumes the primary key column is named 'id',
-		 * which matches strongSwan's SQL schema convention.
-		 * MySQL uses mysql_stmt_insert_id() which doesn't need column name. */
 		if (!pgsql_strcasestr(pgsql, "RETURNING"))
 		{
 			size_t len = strlen(pgsql) + 20;
@@ -978,12 +974,34 @@ METHOD(database_t, execute, int,
 			if (!exec_sql)
 			{
 				DBG1(DBG_LIB, "malloc() failed for RETURNING clause");
-				exec_sql = pgsql; /* Fall back to original query */
+				/* Cleanup - matches param_error cleanup pattern */
+				for (int i = 0; i < param_count && param_values; i++)
+				{
+					if (param_values[i])
+					{
+						if (param_is_libpq && param_is_libpq[i])
+						{
+							PQfreemem(param_values[i]);
+						}
+						else
+						{
+							free(param_values[i]);
+						}
+					}
+				}
+				free(param_values);
+				free(param_lengths);
+				free(param_formats);
+				free(param_is_libpq);
+				free(pgsql);
+				va_end(args);
+				conn_release(this, conn);
+				return -1;
 			}
-			else
-			{
-				snprintf(exec_sql, len, "%s RETURNING id", pgsql);
-			}
+			/* Note: Assumes primary key column is named 'id', which matches
+			 * strongSwan's SQL schema convention. MySQL uses mysql_stmt_insert_id()
+			 * which doesn't need a column name. */
+			snprintf(exec_sql, len, "%s RETURNING id", pgsql);
 		}
 	}
 
