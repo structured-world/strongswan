@@ -16,8 +16,9 @@
 
 #include "database.h"
 
-ENUM(db_driver_names, DB_ANY, DB_MYSQL,
+ENUM(db_driver_names, DB_ANY, DB_PGSQL,
 	"any",
 	"SQLite",
 	"MySQL",
+	"PostgreSQL",
 );
