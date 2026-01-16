@@ -30,8 +30,8 @@ typedef struct dhcp_inform_plugin_t dhcp_inform_plugin_t;
  *
  * This plugin:
  * - Listens for DHCPINFORM on the VPN interface
- * - Looks up the client's identity via their virtual IP
- * - Queries PostgreSQL for INTERNAL_IP4_SUBNET attributes (type 13)
+ * - Looks up routes by matching client's virtual IP to network pool CIDR
+ * - Queries PostgreSQL for routes configured in the pool's environment
  * - Responds with DHCPACK containing option 121/249 with routes
  */
 struct dhcp_inform_plugin_t {

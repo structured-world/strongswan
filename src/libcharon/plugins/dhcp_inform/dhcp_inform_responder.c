@@ -184,6 +184,7 @@ static traffic_selector_t *parse_cidr(const char *cidr)
 	}
 
 	ts = traffic_selector_create_from_subnet(host, prefix, 0, 0, 65535);
+	host->destroy(host);
 	if (!ts)
 	{
 		DBG1(DBG_NET, "dhcp-inform: failed to create traffic selector for %s", cidr);
@@ -308,6 +309,7 @@ static chunk_t encode_classless_routes(linked_list_t *routes, uint32_t gateway)
 	traffic_selector_t *ts;
 	uint8_t *ptr;
 	size_t total_len = 0;
+	size_t route_len;
 
 	enumerator = routes->create_enumerator(routes);
 	while (enumerator->enumerate(enumerator, &ts))
@@ -317,7 +319,14 @@ static chunk_t encode_classless_routes(linked_list_t *routes, uint32_t gateway)
 
 		ts->to_subnet(ts, &net, &prefix);
 		net->destroy(net);
-		total_len += 1 + ((prefix + 7) / 8) + 4;
+		route_len = 1 + ((prefix + 7) / 8) + 4;
+		/* Check for overflow (max DHCP option is 255 bytes anyway) */
+		if (total_len + route_len > 255)
+		{
+			DBG1(DBG_NET, "dhcp-inform: routes exceed maximum option size");
+			break;
+		}
+		total_len += route_len;
 	}
 	enumerator->destroy(enumerator);
 
@@ -327,6 +336,11 @@ static chunk_t encode_classless_routes(linked_list_t *routes, uint32_t gateway)
 	}
 
 	encoded = chunk_alloc(total_len);
+	if (!encoded.ptr)
+	{
+		DBG1(DBG_NET, "dhcp-inform: failed to allocate routes buffer");
+		return chunk_empty;
+	}
 	ptr = encoded.ptr;
 
 	enumerator = routes->create_enumerator(routes);
@@ -385,6 +399,11 @@ static uint8_t *find_dhcp_option(dhcp_packet_t *pkt, uint8_t code, uint8_t *len)
 				*len = opt[1];
 			}
 			return opt + 2;
+		}
+		/* Bounds check before advancing */
+		if (opt + 2 + opt[1] > end)
+		{
+			break;
 		}
 		opt += 2 + opt[1];
 	}
@@ -636,6 +655,12 @@ static void process_dhcp_packet(private_dhcp_inform_responder_t *this,
 	}
 
 	if (udp_len < sizeof(struct udphdr) + 240)  /* Min DHCP size */
+	{
+		return;
+	}
+
+	/* Verify actual buffer has enough data for DHCP packet before accessing */
+	if (len < ip_hdr_len + sizeof(struct udphdr) + sizeof(dhcp_packet_t))
 	{
 		return;
 	}
