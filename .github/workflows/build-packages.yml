@@ -101,6 +101,9 @@ jobs:
             libldap2-dev \
             libsqlite3-dev \
             libgcrypt20-dev \
+            gperf \
+            flex \
+            bison \
             dpkg-dev \
             fakeroot \
             debhelper
