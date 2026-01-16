@@ -4,7 +4,7 @@ name: "CodeQL"
 # Scoped to our fork-specific changes only
 on:
   push:
-    branches: [sw, 'feature/**', 'feat/**', 'fix/**']
+    branches: [sw]
     paths:
       - 'src/libstrongswan/plugins/pgsql/**'
       - 'src/libstrongswan/database/**'
