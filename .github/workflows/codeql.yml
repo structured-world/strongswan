@@ -29,7 +29,7 @@ env:
 
 jobs:
   analyze:
-    name: Analyze SW changes
+    name: CodeQL
     runs-on: ubuntu-latest
     permissions:
       actions: read
