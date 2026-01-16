@@ -1,18 +1,77 @@
 name: Build Packages
 
 on:
-  push:
-    branches:
-      - sw
+  workflow_call:
+    inputs:
+      upstream_version:
+        description: 'Upstream strongSwan version'
+        required: true
+        type: string
   workflow_dispatch:
-
-concurrency:
-  group: build-packages-${{ github.ref }}
-  cancel-in-progress: true
+    inputs:
+      upstream_version:
+        description: 'Upstream version (leave empty for auto-detect)'
+        required: false
+        type: string
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      upstream_version: ${{ steps.version.outputs.upstream_version }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ -n "${{ inputs.upstream_version }}" ]; then
+            UPSTREAM_VERSION="${{ inputs.upstream_version }}"
+          else
+            # Get from configure.ac
+            UPSTREAM_VERSION=$(grep -m1 'AC_INIT' configure.ac | sed -E 's/.*\[([0-9]+\.[0-9]+\.[0-9]+)\].*/\1/')
+          fi
+
+          # SW version: upstream-sw.N where N increments for each rebuild
+          # For now, manually bump .N when rebuilding the same upstream version.
+          # Auto-increment would require: gh release list, parse versions,
+          # find max N for this upstream version. Low priority since rebuilds
+          # of the same upstream version are rare.
+          VERSION="${UPSTREAM_VERSION}-sw.1"
+
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "upstream_version=$UPSTREAM_VERSION" >> $GITHUB_OUTPUT
+          echo "Building version: $VERSION (based on upstream $UPSTREAM_VERSION)"
+
   build:
-    runs-on: ubuntu-24.04
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            dist: noble
+            libssl: libssl3t64
+            libldap: libldap-2.5-0
+            arch: amd64
+          - os: ubuntu-22.04
+            dist: jammy
+            libssl: libssl3
+            libldap: libldap-2.5-0
+            arch: amd64
+          # Debian 12 builds on ubuntu-22.04 (similar glibc/lib versions)
+          # Note: For true Debian builds, consider using a Debian container
+          - os: ubuntu-22.04
+            dist: bookworm
+            libssl: libssl3
+            libldap: libldap-2.5-0
+            arch: amd64
+            debian: true
+
+    runs-on: ${{ matrix.os }}
     permissions:
       contents: write
 
@@ -21,22 +80,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Determine version
-        id: version
-        run: |
-          # Get upstream version from configure.ac
-          UPSTREAM_VERSION=$(grep -m1 'AC_INIT' configure.ac | sed -E 's/.*\[([0-9]+\.[0-9]+\.[0-9]+)\].*/\1/')
-
-          # Build number from run number
-          BUILD_NUM=${{ github.run_number }}
-
-          # Final version: upstream-sw.build
-          VERSION="${UPSTREAM_VERSION}-sw.${BUILD_NUM}"
-
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "upstream_version=$UPSTREAM_VERSION" >> $GITHUB_OUTPUT
-          echo "Version: $VERSION"
 
       - name: Install build dependencies
         run: |
@@ -51,13 +94,13 @@ jobs:
             libgmp-dev \
             libssl-dev \
             libcurl4-openssl-dev \
+            libpq-dev \
             libsystemd-dev \
             libcap-dev \
             libpam0g-dev \
             libldap2-dev \
             libsqlite3-dev \
             libgcrypt20-dev \
-            libnm-dev \
             dpkg-dev \
             fakeroot \
             debhelper
@@ -68,6 +111,8 @@ jobs:
           ./configure \
             --prefix=/usr \
             --sysconfdir=/etc \
+            --libdir=/usr/lib \
+            --libexecdir=/usr/lib \
             --enable-eap-identity \
             --enable-eap-mschapv2 \
             --enable-eap-radius \
@@ -76,6 +121,7 @@ jobs:
             --enable-vici \
             --enable-swanctl \
             --enable-sql \
+            --enable-pgsql \
             --enable-sqlite \
             --enable-systemd \
             --enable-openssl \
@@ -83,7 +129,6 @@ jobs:
             --enable-ldap \
             --enable-pam \
             --enable-gcrypt \
-            --enable-nm \
             --enable-farp \
             --enable-dhcp \
             --enable-attr-sql \
@@ -93,66 +138,136 @@ jobs:
 
       - name: Create DEB packages
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          PKGDIR="strongswan-sw_${VERSION}"
+          VERSION="${{ needs.prepare.outputs.version }}"
+          DIST="${{ matrix.dist }}"
+          ARCH="${{ matrix.arch }}"
+          LIBSSL="${{ matrix.libssl }}"
+          LIBLDAP="${{ matrix.libldap }}"
 
           # Main package
+          PKGDIR="strongswan-sw_${VERSION}_${DIST}_${ARCH}"
           mkdir -p "${PKGDIR}/DEBIAN"
-          mkdir -p "${PKGDIR}/usr"
-          mkdir -p "${PKGDIR}/etc"
 
           make DESTDIR="$(pwd)/${PKGDIR}" install
 
-          # Create control file
           cat > "${PKGDIR}/DEBIAN/control" << EOF
           Package: strongswan-sw
           Version: ${VERSION}
           Section: net
           Priority: optional
-          Architecture: amd64
-          Depends: libgmp10, libssl3, libcurl4, libsystemd0, libcap2, libpam0g, libldap2, libsqlite3-0, libgcrypt20
+          Architecture: ${ARCH}
+          Depends: libgmp10, ${LIBSSL}, libcurl4, libsystemd0, libcap2, libpam0g, ${LIBLDAP}, libsqlite3-0, libgcrypt20
+          Conflicts: strongswan, strongswan-charon, strongswan-starter
+          Replaces: strongswan, strongswan-charon, strongswan-starter
           Maintainer: Structured World Foundation <dev@sw.foundation>
-          Description: strongSwan IPsec implementation (SW fork)
+          Homepage: https://github.com/structured-world/strongswan
+          Description: strongSwan IPsec (SW fork with pgsql support)
            strongSwan is a complete IPsec implementation for Linux.
-           This is the Structured World fork with socket permissions fix
-           and PostgreSQL plugin support.
+           This is the Structured World fork with:
+           - Socket permissions fix (umask 0660 for Unix sockets)
+           - PostgreSQL database plugin for SQL authentication
           EOF
 
-          # Build deb
           fakeroot dpkg-deb --build "${PKGDIR}"
 
-          # List artifacts
+          # PostgreSQL plugin package
+          PGSQL_PKGDIR="strongswan-pgsql_${VERSION}_${DIST}_${ARCH}"
+          mkdir -p "${PGSQL_PKGDIR}/DEBIAN"
+          mkdir -p "${PGSQL_PKGDIR}/usr/lib/ipsec/plugins"
+          mkdir -p "${PGSQL_PKGDIR}/etc/strongswan.d/charon"
+
+          # Copy pgsql plugin to separate package, remove from main package
+          PGSQL_SO=$(find "${PKGDIR}" -name "libstrongswan-pgsql.so" -type f | head -1)
+          if [ -z "$PGSQL_SO" ]; then
+            echo "ERROR: PostgreSQL plugin not found in build output"
+            echo "Available plugins:"
+            find "${PKGDIR}" -name "*.so" -path "*/plugins/*" | head -20
+            exit 1
+          fi
+          cp -a "$PGSQL_SO" "${PGSQL_PKGDIR}/usr/lib/ipsec/plugins/"
+          rm -f "$PGSQL_SO"  # Remove from main package
+
+          cat > "${PGSQL_PKGDIR}/DEBIAN/control" << EOF
+          Package: strongswan-pgsql
+          Version: ${VERSION}
+          Section: net
+          Priority: optional
+          Architecture: ${ARCH}
+          Depends: strongswan-sw (= ${VERSION}), libpq5
+          Maintainer: Structured World Foundation <dev@sw.foundation>
+          Homepage: https://github.com/structured-world/strongswan
+          Description: PostgreSQL plugin for strongSwan (SW fork)
+           PostgreSQL database backend for strongSwan SQL plugin.
+           Enables storing VPN user credentials and configuration in PostgreSQL.
+          EOF
+
+          fakeroot dpkg-deb --build "${PGSQL_PKGDIR}"
+
+          # Rename to standard format
+          mv "${PKGDIR}.deb" "strongswan-sw_${VERSION}_${DIST}_${ARCH}.deb"
+          mv "${PGSQL_PKGDIR}.deb" "strongswan-pgsql_${VERSION}_${DIST}_${ARCH}.deb"
+
           ls -la *.deb
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: deb-packages
+          name: deb-${{ matrix.dist }}-${{ matrix.arch }}
           path: "*.deb"
-          retention-days: 30
+          retention-days: 90
+
+  release:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: packages
+          pattern: deb-*
+          merge-multiple: true
+
+      - name: List packages
+        run: ls -la packages/
 
       - name: Create Release
-        if: github.ref == 'refs/heads/sw'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.version.outputs.version }}
-          name: strongSwan SW ${{ steps.version.outputs.version }}
+          tag_name: v${{ needs.prepare.outputs.version }}
+          name: strongSwan SW ${{ needs.prepare.outputs.version }}
           body: |
-            ## strongSwan SW Fork v${{ steps.version.outputs.version }}
+            ## strongSwan SW Fork v${{ needs.prepare.outputs.version }}
 
-            Based on upstream strongSwan ${{ steps.version.outputs.upstream_version }}
+            Based on upstream strongSwan **${{ needs.prepare.outputs.upstream_version }}**
 
             ### Changes from upstream:
             - Socket permissions fix (umask 0660 for Unix sockets)
+            - PostgreSQL database plugin for SQL authentication
 
             ### Packages:
-            - `strongswan-sw` - Main package with all standard plugins
+            | Package | Description |
+            |---------|-------------|
+            | `strongswan-sw` | Main package with all standard plugins |
+            | `strongswan-pgsql` | PostgreSQL database plugin |
+
+            ### Supported distributions:
+            - Ubuntu 24.04 (Noble)
+            - Ubuntu 22.04 (Jammy)
+            - Debian 12 (Bookworm)
 
             ### Installation:
             ```bash
-            sudo dpkg -i strongswan-sw_*.deb
+            # Download packages for your distribution
+            wget https://github.com/structured-world/strongswan/releases/download/v${{ needs.prepare.outputs.version }}/strongswan-sw_${{ needs.prepare.outputs.version }}_<dist>_amd64.deb
+            wget https://github.com/structured-world/strongswan/releases/download/v${{ needs.prepare.outputs.version }}/strongswan-pgsql_${{ needs.prepare.outputs.version }}_<dist>_amd64.deb
+
+            # Install
+            sudo dpkg -i strongswan-sw_*.deb strongswan-pgsql_*.deb
             sudo apt-get install -f  # Install dependencies
             ```
-          files: "*.deb"
+          files: packages/*.deb
           draft: false
           prerelease: false
