@@ -449,7 +449,7 @@ static uint16_t ip_checksum(void *data, size_t len)
  * Calculate UDP checksum with pseudo-header
  */
 static uint16_t udp_checksum(uint32_t src, uint32_t dst,
-							 struct udphdr *udp, size_t len)
+							 void *data, size_t len)
 {
 	uint32_t sum = 0;
 	uint16_t *ptr;
@@ -463,7 +463,7 @@ static uint16_t udp_checksum(uint32_t src, uint32_t dst,
 	sum += htons(len);
 
 	/* UDP header + data */
-	ptr = (uint16_t*)udp;
+	ptr = (uint16_t*)data;
 	while (len > 1)
 	{
 		sum += *ptr++;
@@ -719,15 +719,13 @@ static void process_dhcp_packet(private_dhcp_inform_responder_t *this,
 CALLBACK(receive_dhcp, bool,
 	private_dhcp_inform_responder_t *this, int fd, watcher_event_t event)
 {
-	struct __attribute__((packed)) {
-		struct iphdr hdr;
-		char data[2048];
-	} buf;
+	uint8_t buf[2048 + sizeof(struct iphdr)];
+	struct iphdr *hdr = (struct iphdr*)buf;
 	ssize_t len;
 	struct sockaddr_ll addr;
 	socklen_t alen = sizeof(addr);
 
-	len = recvfrom(fd, &buf, sizeof(buf), MSG_DONTWAIT,
+	len = recvfrom(fd, buf, sizeof(buf), MSG_DONTWAIT,
 				   (struct sockaddr*)&addr, &alen);
 
 	if (len < 0)
@@ -741,7 +739,7 @@ CALLBACK(receive_dhcp, bool,
 
 	if (len >= (ssize_t)sizeof(struct iphdr))
 	{
-		process_dhcp_packet(this, &buf.hdr, len);
+		process_dhcp_packet(this, hdr, len);
 	}
 
 	return TRUE;
