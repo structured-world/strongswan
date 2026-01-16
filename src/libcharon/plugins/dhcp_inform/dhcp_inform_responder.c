@@ -65,6 +65,12 @@
 #define DHCP_OPT_MS_CLASSLESS_ROUTES  249  /* Microsoft */
 #define DHCP_OPT_END           255
 
+/* Standard IP TTL for locally-generated packets */
+#define IP_DEFAULT_TTL         64
+
+/* Minimum DHCP message size (excluding options): op through magic = 236 bytes + 4 for options */
+#define DHCP_MIN_MSG_SIZE      240
+
 /* DHCP packet structure */
 typedef struct __attribute__((packed)) {
 	uint8_t op;           /* Message opcode */
@@ -82,7 +88,7 @@ typedef struct __attribute__((packed)) {
 	uint8_t sname[64];    /* Server name */
 	uint8_t file[128];    /* Boot filename */
 	uint32_t magic;       /* Magic cookie */
-	uint8_t options[308]; /* Options */
+	uint8_t options[308]; /* Options (576 min packet - 236 fixed - 20 IP - 8 UDP - 4 margin) */
 } dhcp_packet_t;
 
 typedef struct private_dhcp_inform_responder_t private_dhcp_inform_responder_t;
@@ -212,12 +218,6 @@ static linked_list_t *get_routes_by_ip(private_dhcp_inform_responder_t *this,
 	{
 		DBG1(DBG_NET, "dhcp-inform: CRITICAL - failed to allocate routes list");
 		return NULL;
-	}
-
-	if (!this)
-	{
-		DBG1(DBG_NET, "dhcp-inform: CRITICAL - null responder");
-		return routes;
 	}
 
 	if (!this->db)
@@ -589,7 +589,7 @@ static void send_dhcp_ack(private_dhcp_inform_responder_t *this,
 	pkt.ip.tot_len = htons(total_len);
 	pkt.ip.id = htons(__sync_fetch_and_add(&ip_id_counter, 1) & 0xFFFF);
 	pkt.ip.frag_off = 0;
-	pkt.ip.ttl = 64;
+	pkt.ip.ttl = IP_DEFAULT_TTL;
 	pkt.ip.protocol = IPPROTO_UDP;
 	pkt.ip.saddr = this->server_ip;
 	pkt.ip.daddr = client_ip;
@@ -654,7 +654,7 @@ static void process_dhcp_packet(private_dhcp_inform_responder_t *this,
 		return;
 	}
 
-	if (udp_len < sizeof(struct udphdr) + 240)  /* Min DHCP size */
+	if (udp_len < sizeof(struct udphdr) + DHCP_MIN_MSG_SIZE)
 	{
 		return;
 	}
@@ -802,6 +802,7 @@ static int get_ifindex(int fd, const char *ifname)
 	struct ifreq ifr = {};
 
 	strncpy(ifr.ifr_name, ifname, IFNAMSIZ-1);
+	ifr.ifr_name[IFNAMSIZ-1] = '\0';
 
 	if (ioctl(fd, SIOCGIFINDEX, &ifr) == 0)
 	{
@@ -933,20 +934,25 @@ dhcp_inform_responder_t *dhcp_inform_responder_create()
 	if (iface)
 	{
 		this->ifindex = get_ifindex(this->raw_fd, iface);
-		if (this->ifindex)
+		if (!this->ifindex)
 		{
-			struct sockaddr_ll addr = {
-				.sll_family = AF_PACKET,
-				.sll_protocol = htons(ETH_P_IP),
-				.sll_ifindex = this->ifindex,
-			};
-			if (bind(this->pkt_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0)
-			{
-				DBG1(DBG_NET, "dhcp-inform: failed to bind packet socket to %s: %s",
-					 iface, strerror(errno));
-				destroy(this);
-				return NULL;
-			}
+			DBG1(DBG_NET, "dhcp-inform: failed to get interface index for %s",
+				 iface);
+			destroy(this);
+			return NULL;
+		}
+
+		struct sockaddr_ll addr = {
+			.sll_family = AF_PACKET,
+			.sll_protocol = htons(ETH_P_IP),
+			.sll_ifindex = this->ifindex,
+		};
+		if (bind(this->pkt_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0)
+		{
+			DBG1(DBG_NET, "dhcp-inform: failed to bind packet socket to %s: %s",
+				 iface, strerror(errno));
+			destroy(this);
+			return NULL;
 		}
 	}
 
