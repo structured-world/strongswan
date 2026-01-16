@@ -1,0 +1,4 @@
+pgsql {
+    # Load the PostgreSQL database backend
+    load = yes
+}

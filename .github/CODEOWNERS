@@ -1,0 +1,8 @@
+# Code owners for strongswan-sw fork
+# These owners will be requested for review when PRs touch these paths
+
+# All changes to sw-specific code require review
+/src/libstrongswan/plugins/pgsql/ @polaz
+/src/libstrongswan/database/ @polaz
+/.github/workflows/build-packages.yml @polaz
+/.github/workflows/sync-upstream.yml @polaz
