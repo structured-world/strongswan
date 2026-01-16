@@ -272,6 +272,9 @@ jobs:
         run: |
           UPSTREAM="${{ needs.prepare.outputs.upstream_version }}"
 
+          # Fix git safe directory for container
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
           # Create git tag to satisfy strongSwan version check
           git config user.email "build@sw.foundation"
           git config user.name "Build"
