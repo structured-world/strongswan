@@ -36,17 +36,13 @@ jobs:
           fi
 
           # SW version: upstream-sw.N where N increments for each rebuild
-          # For now, manually bump .N when rebuilding the same upstream version.
-          # Auto-increment would require: gh release list, parse versions,
-          # find max N for this upstream version. Low priority since rebuilds
-          # of the same upstream version are rare.
           VERSION="${UPSTREAM_VERSION}-sw.1"
 
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "upstream_version=$UPSTREAM_VERSION" >> $GITHUB_OUTPUT
           echo "Building version: $VERSION (based on upstream $UPSTREAM_VERSION)"
 
-  build:
+  build-deb:
     needs: prepare
     strategy:
       fail-fast: false
@@ -62,18 +58,13 @@ jobs:
             libssl: libssl3
             libldap: libldap-2.5-0
             arch: amd64
-          # Debian 12 builds on ubuntu-22.04 (similar glibc/lib versions)
-          # Note: For true Debian builds, consider using a Debian container
           - os: ubuntu-22.04
             dist: bookworm
             libssl: libssl3
             libldap: libldap-2.5-0
             arch: amd64
-            debian: true
 
     runs-on: ${{ matrix.os }}
-    permissions:
-      contents: write
 
     steps:
       - name: Checkout
@@ -188,7 +179,7 @@ jobs:
             exit 1
           fi
           cp -a "$PGSQL_SO" "${PGSQL_PKGDIR}/usr/lib/ipsec/plugins/"
-          rm -f "$PGSQL_SO"  # Remove from main package
+          rm -f "$PGSQL_SO"
 
           cat > "${PGSQL_PKGDIR}/DEBIAN/control" << EOF
           Package: strongswan-pgsql
@@ -213,60 +204,381 @@ jobs:
         with:
           name: deb-${{ matrix.dist }}-${{ matrix.arch }}
           path: "*.deb"
-          retention-days: 90
+          retention-days: 7
 
-  release:
-    needs: [prepare, build]
+  build-rpm:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - fedora: 39
+            container: fedora:39
+          - fedora: 40
+            container: fedora:40
+          - fedora: 41
+            container: fedora:41
+          - fedora: 42
+            container: fedora:42
+
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    container: ${{ matrix.container }}
 
     steps:
-      - name: Download all artifacts
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          dnf install -y \
+            gcc \
+            make \
+            autoconf \
+            automake \
+            libtool \
+            pkgconfig \
+            gettext-devel \
+            gmp-devel \
+            openssl-devel \
+            libcurl-devel \
+            libpq-devel \
+            systemd-devel \
+            libcap-devel \
+            pam-devel \
+            openldap-devel \
+            sqlite-devel \
+            libgcrypt-devel \
+            gperf \
+            flex \
+            bison \
+            rpm-build \
+            rpmdevtools
+
+      - name: Build strongSwan
+        run: |
+          autoreconf -i
+          ./configure \
+            --prefix=/usr \
+            --sysconfdir=/etc \
+            --libdir=/usr/lib64 \
+            --libexecdir=/usr/lib64 \
+            --enable-eap-identity \
+            --enable-eap-mschapv2 \
+            --enable-eap-radius \
+            --enable-eap-tls \
+            --enable-xauth-eap \
+            --enable-vici \
+            --enable-swanctl \
+            --enable-sql \
+            --enable-pgsql \
+            --enable-sqlite \
+            --enable-systemd \
+            --enable-openssl \
+            --enable-curl \
+            --enable-ldap \
+            --enable-pam \
+            --enable-gcrypt \
+            --enable-farp \
+            --enable-dhcp \
+            --enable-attr-sql \
+            --disable-static
+
+          make -j$(nproc)
+
+      - name: Create RPM packages
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+          UPSTREAM="${{ needs.prepare.outputs.upstream_version }}"
+          FEDORA="${{ matrix.fedora }}"
+
+          # Create main strongswan-sw RPM
+          MAIN_PKGDIR="strongswan-sw-${VERSION}"
+          mkdir -p "${MAIN_PKGDIR}"
+          make DESTDIR="$(pwd)/${MAIN_PKGDIR}" install
+
+          # Remove pgsql plugin from main package (will be in separate RPM)
+          PGSQL_SO=$(find "${MAIN_PKGDIR}" -name "libstrongswan-pgsql.so" -type f | head -1)
+          if [ -n "$PGSQL_SO" ]; then
+            PGSQL_SO_PATH=$(dirname "$PGSQL_SO" | sed "s|${MAIN_PKGDIR}||")
+            mkdir -p pgsql-plugin${PGSQL_SO_PATH}
+            mv "$PGSQL_SO" pgsql-plugin${PGSQL_SO_PATH}/
+          fi
+
+          # Setup rpmbuild structure
+          mkdir -p ~/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+
+          # Create tarball for main package
+          tar czf ~/rpmbuild/SOURCES/strongswan-sw-${VERSION}.tar.gz "${MAIN_PKGDIR}"
+
+          # Main package spec
+          cat > ~/rpmbuild/SPECS/strongswan-sw.spec << 'SPEC_EOF'
+          Name:           strongswan-sw
+          Version:        %{pkg_version}
+          Release:        1.sw%{?dist}
+          Summary:        strongSwan IPsec (SW fork with pgsql support)
+
+          License:        GPLv2+
+          URL:            https://github.com/structured-world/strongswan
+          Source0:        strongswan-sw-%{pkg_version}.tar.gz
+
+          Requires:       gmp
+          Requires:       openssl-libs
+          Requires:       libcurl
+          Requires:       systemd-libs
+          Requires:       libcap
+          Requires:       pam
+          Requires:       openldap
+          Requires:       sqlite-libs
+          Requires:       libgcrypt
+
+          Conflicts:      strongswan
+
+          %description
+          strongSwan is a complete IPsec implementation for Linux.
+          This is the Structured World Foundation fork with:
+          - Socket permissions fix (umask 0660 for Unix sockets)
+          - PostgreSQL database plugin for SQL authentication
+
+          %prep
+          %setup -q
+
+          %install
+          cp -a * %{buildroot}/
+
+          %files
+          /usr/*
+          /etc/*
+
+          %changelog
+          * %(date "+%a %b %d %Y") SW Foundation <dev@sw.foundation> - %{pkg_version}-1.sw
+          - strongSwan SW fork release
+          SPEC_EOF
+
+          rpmbuild -bb ~/rpmbuild/SPECS/strongswan-sw.spec \
+            --define "pkg_version ${VERSION}" \
+            --define "_topdir $HOME/rpmbuild"
+
+          # Create pgsql plugin tarball
+          tar czf ~/rpmbuild/SOURCES/strongswan-pgsql-${VERSION}.tar.gz pgsql-plugin
+
+          # Plugin package spec
+          cat > ~/rpmbuild/SPECS/strongswan-pgsql.spec << 'SPEC_EOF'
+          Name:           strongswan-pgsql
+          Version:        %{pkg_version}
+          Release:        1.sw%{?dist}
+          Summary:        PostgreSQL database plugin for strongSwan
+
+          License:        GPLv2+
+          URL:            https://github.com/structured-world/strongswan
+          Source0:        strongswan-pgsql-%{pkg_version}.tar.gz
+
+          Requires:       strongswan-sw = %{pkg_version}
+          Requires:       libpq
+
+          %description
+          PostgreSQL database backend for strongSwan SQL plugin.
+          Enables storing VPN user credentials and configuration in PostgreSQL.
+
+          %prep
+          %setup -q -n pgsql-plugin
+
+          %install
+          cp -a * %{buildroot}/
+
+          %files
+          /usr/lib64/ipsec/plugins/libstrongswan-pgsql.so
+
+          %changelog
+          * %(date "+%a %b %d %Y") SW Foundation <dev@sw.foundation> - %{pkg_version}-1.sw
+          - PostgreSQL database plugin for strongSwan
+          SPEC_EOF
+
+          rpmbuild -bb ~/rpmbuild/SPECS/strongswan-pgsql.spec \
+            --define "pkg_version ${VERSION}" \
+            --define "_topdir $HOME/rpmbuild"
+
+          # Copy RPMs to workspace
+          mkdir -p rpms
+          cp ~/rpmbuild/RPMS/*/*.rpm rpms/
+          ls -la rpms/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpm-fc${{ matrix.fedora }}
+          path: "rpms/*.rpm"
+          retention-days: 7
+
+  publish:
+    needs: [prepare, build-deb, build-rpm]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all DEB artifacts
         uses: actions/download-artifact@v4
         with:
-          path: packages
+          path: packages/deb
           pattern: deb-*
           merge-multiple: true
 
-      - name: List packages
-        run: ls -la packages/
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
+      - name: Download all RPM artifacts
+        uses: actions/download-artifact@v4
         with:
-          tag_name: v${{ needs.prepare.outputs.version }}
-          name: strongSwan SW ${{ needs.prepare.outputs.version }}
-          body: |
-            ## strongSwan SW Fork v${{ needs.prepare.outputs.version }}
+          path: packages/rpm
+          pattern: rpm-*
+          merge-multiple: true
 
-            Based on upstream strongSwan **${{ needs.prepare.outputs.upstream_version }}**
+      - name: List packages
+        run: |
+          echo "=== DEB packages ==="
+          ls -la packages/deb/
+          echo "=== RPM packages ==="
+          ls -la packages/rpm/
 
-            ### Changes from upstream:
-            - Socket permissions fix (umask 0660 for Unix sockets)
-            - PostgreSQL database plugin for SQL authentication
+      - name: Clone repository
+        uses: actions/checkout@v4
+        with:
+          repository: structured-world/repo
+          token: ${{ secrets.REPO_TOKEN }}
+          path: repo
 
-            ### Packages:
-            | Package | Description |
-            |---------|-------------|
-            | `strongswan-sw` | Main package with all standard plugins |
-            | `strongswan-pgsql` | PostgreSQL database plugin |
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y apt-utils createrepo-c gnupg
 
-            ### Supported distributions:
-            - Ubuntu 24.04 (Noble)
-            - Ubuntu 22.04 (Jammy)
-            - Debian 12 (Bookworm)
+      - name: Import GPG key
+        env:
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --batch --import
+          # Test signing (validates key import, passphrase optional)
+          if [ -n "$GPG_PASSPHRASE" ]; then
+            echo "$GPG_PASSPHRASE" | gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 --sign --armor /dev/null || true
+          fi
 
-            ### Installation:
-            ```bash
-            # Download packages for your distribution
-            wget https://github.com/structured-world/strongswan/releases/download/v${{ needs.prepare.outputs.version }}/strongswan-sw_${{ needs.prepare.outputs.version }}_<dist>_amd64.deb
-            wget https://github.com/structured-world/strongswan/releases/download/v${{ needs.prepare.outputs.version }}/strongswan-pgsql_${{ needs.prepare.outputs.version }}_<dist>_amd64.deb
+      - name: Publish DEB packages
+        env:
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
 
-            # Install
-            sudo dpkg -i strongswan-sw_*.deb strongswan-pgsql_*.deb
-            sudo apt-get install -f  # Install dependencies
-            ```
-          files: packages/*.deb
-          draft: false
-          prerelease: false
+          cd repo
+
+          # Copy DEB packages to pool
+          for deb in ../packages/deb/*.deb; do
+            PKGNAME=$(dpkg-deb -f "$deb" Package)
+            FIRST_LETTER="${PKGNAME:0:1}"
+            POOL_DIR="deb/pool/main/${FIRST_LETTER}/${PKGNAME}"
+            mkdir -p "$POOL_DIR"
+            cp "$deb" "$POOL_DIR/"
+            echo "Copied $deb to $POOL_DIR/"
+          done
+
+          # GPG signing helper
+          gpg_sign() {
+            if [ -n "$GPG_PASSPHRASE" ]; then
+              gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" "$@"
+            else
+              gpg --batch --yes "$@"
+            fi
+          }
+
+          # Update Packages index for each distribution
+          for dist in jammy noble bookworm; do
+            DIST_DIR="deb/dists/${dist}"
+            mkdir -p "${DIST_DIR}/main/binary-amd64"
+
+            # Generate Packages file
+            apt-ftparchive packages "deb/pool/main" | \
+              grep -A 1000 "Filename: .*_${dist}_" > "${DIST_DIR}/main/binary-amd64/Packages" || true
+
+            # If no dist-specific packages, generate from all
+            if [ ! -s "${DIST_DIR}/main/binary-amd64/Packages" ]; then
+              apt-ftparchive packages "deb/pool/main" > "${DIST_DIR}/main/binary-amd64/Packages"
+            fi
+
+            gzip -kf "${DIST_DIR}/main/binary-amd64/Packages"
+
+            # Generate Release file
+            cat > "${DIST_DIR}/Release" << EOF
+          Origin: SW Foundation
+          Label: SW Foundation
+          Suite: ${dist}
+          Codename: ${dist}
+          Architectures: amd64
+          Components: main
+          Description: SW Foundation Package Repository
+          EOF
+
+            # Add checksums
+            apt-ftparchive release "${DIST_DIR}" >> "${DIST_DIR}/Release"
+
+            # Sign Release file
+            gpg_sign --armor --detach-sign -o "${DIST_DIR}/Release.gpg" "${DIST_DIR}/Release"
+            gpg_sign --clearsign -o "${DIST_DIR}/InRelease" "${DIST_DIR}/Release"
+
+            echo "Updated ${dist} repository"
+          done
+
+      - name: Publish RPM packages
+        env:
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          cd repo
+
+          # GPG signing helper
+          gpg_sign() {
+            if [ -n "$GPG_PASSPHRASE" ]; then
+              gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" "$@"
+            else
+              gpg --batch --yes "$@"
+            fi
+          }
+
+          # Copy RPM packages to appropriate Fedora directories
+          for rpm in ../packages/rpm/*.rpm; do
+            FILENAME=$(basename "$rpm")
+            # Extract fc version from filename (e.g., strongswan-sw-6.0.4-sw.1-1.sw.fc40.x86_64.rpm)
+            if [[ "$FILENAME" =~ \.fc([0-9]+)\. ]]; then
+              FC_VER="${BASH_REMATCH[1]}"
+              DEST_DIR="rpm/fc${FC_VER}"
+              mkdir -p "$DEST_DIR"
+              cp "$rpm" "$DEST_DIR/"
+              echo "Copied $rpm to $DEST_DIR/"
+            fi
+          done
+
+          # Update repository metadata for each Fedora version
+          for fc in 39 40 41 42; do
+            FC_DIR="rpm/fc${fc}"
+            if [ -d "$FC_DIR" ] && ls "$FC_DIR"/*.rpm 1>/dev/null 2>&1; then
+              createrepo_c --update "$FC_DIR"
+
+              # Sign repomd.xml
+              gpg_sign --armor --detach-sign -o "${FC_DIR}/repodata/repomd.xml.asc" \
+                "${FC_DIR}/repodata/repomd.xml"
+
+              echo "Updated fc${fc} repository"
+            fi
+          done
+
+      - name: Commit and push
+        run: |
+          cd repo
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+          git status
+
+          VERSION="${{ needs.prepare.outputs.version }}"
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Release strongSwan SW ${VERSION}"
+            git push
+            echo "Pushed release ${VERSION} to repository"
+          fi
