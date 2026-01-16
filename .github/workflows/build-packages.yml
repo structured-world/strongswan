@@ -272,18 +272,17 @@ jobs:
         env:
           UPSTREAM: ${{ needs.prepare.outputs.upstream_version }}
         run: |
-          # Debug: show current directory and .git status
-          echo "PWD: $(pwd)"
-          ls -la .git 2>/dev/null || echo ".git not found"
-
-          # Fix git safe directory for container - must be done before any git command
-          git config --global --add safe.directory /github/workspace
-          git config --global --add safe.directory "$(pwd)"
+          # Initialize git repo if not present (container checkout may not preserve .git)
+          if [ ! -d .git ]; then
+            git init
+            git config user.email "build@sw.foundation"
+            git config user.name "Build"
+            git add -A
+            git commit -m "Imported source"
+          fi
 
           # Create git tag to satisfy strongSwan version check
-          git config user.email "build@sw.foundation"
-          git config user.name "Build"
-          git tag -f "$UPSTREAM" || echo "Warning: could not create git tag"
+          git tag -f "$UPSTREAM"
 
           autoreconf -i
           ./configure \
