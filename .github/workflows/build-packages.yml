@@ -272,11 +272,15 @@ jobs:
         env:
           UPSTREAM: ${{ needs.prepare.outputs.upstream_version }}
         run: |
+          # Configure git safe directory first (required for newer git in containers)
+          git config --global init.defaultBranch main
+          git config --global user.email "build@sw.foundation"
+          git config --global user.name "Build"
+          git config --global --add safe.directory "$(pwd)"
+
           # Initialize git repo if not present (container checkout may not preserve .git)
           if [ ! -d .git ]; then
             git init
-            git config user.email "build@sw.foundation"
-            git config user.name "Build"
             git add -A
             git commit -m "Imported source"
           fi
