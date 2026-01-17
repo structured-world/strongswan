@@ -101,11 +101,15 @@ jobs:
 
       - name: Setup git for tarball creation
         run: |
-          # Configure git for tarball creation (actions/checkout@v4 handles .git)
+          # In container environments, actions/checkout may not create .git properly
+          # due to filesystem boundaries. Initialize if missing for git archive to work.
           git config --global init.defaultBranch main
           git config --global user.email "test@example.com"
           git config --global user.name "Test"
           git config --global --add safe.directory "$(pwd)"
+          if [ ! -d .git ]; then
+            git init && git add -A && git commit -m "test"
+          fi
 
       - name: Build RPM with spec file
         run: |
