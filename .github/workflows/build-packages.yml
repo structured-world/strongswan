@@ -638,3 +638,69 @@ jobs:
             git push
             echo "Pushed release ${VERSION} to repository"
           fi
+
+  # Create GitHub Release in the fork (no artifacts, just links to package repo)
+  release:
+    needs: [prepare, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+          UPSTREAM="${{ needs.prepare.outputs.upstream_version }}"
+
+          # Create release notes
+          cat > release-notes.md << 'EOF'
+          ## strongSwan SW $VERSION
+
+          This release is based on upstream strongSwan $UPSTREAM with SW fork modifications.
+
+          ### Installation
+
+          Packages are available from the [strongswan-sw-repo](https://github.com/structured-world/strongswan-sw-repo).
+
+          **Fedora/RHEL:**
+          ```bash
+          # Add repository (one-time setup)
+          sudo dnf config-manager --add-repo https://structured-world.github.io/strongswan-sw-repo/rpm/fedora/\$releasever/strongswan-sw.repo
+
+          # Install
+          sudo dnf install strongswan-sw
+          ```
+
+          **Ubuntu/Debian:**
+          ```bash
+          # Add repository (one-time setup)
+          curl -fsSL https://structured-world.github.io/strongswan-sw-repo/deb/gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/strongswan-sw.gpg
+          echo "deb [signed-by=/usr/share/keyrings/strongswan-sw.gpg] https://structured-world.github.io/strongswan-sw-repo/deb $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/strongswan-sw.list
+
+          # Install
+          sudo apt update && sudo apt install strongswan-sw
+          ```
+
+          ### SW Fork Changes
+
+          - PostgreSQL database plugin for SQL authentication
+          - Unix socket permissions fix (umask 0660)
+          - DHCP-inform plugin for Windows split-tunnel routes
+
+          For full changelog, see the [sw branch](https://github.com/structured-world/strongswan/tree/sw).
+          EOF
+
+          # Substitute variables in release notes
+          sed -i "s/\$VERSION/${VERSION}/g" release-notes.md
+          sed -i "s/\$UPSTREAM/${UPSTREAM}/g" release-notes.md
+
+          # Create tag and release
+          gh release create "${VERSION}" \
+            --title "strongSwan SW ${VERSION}" \
+            --notes-file release-notes.md \
+            --target sw
