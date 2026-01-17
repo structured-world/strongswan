@@ -158,67 +158,6 @@ struct private_dhcp_inform_responder_t {
 };
 
 /**
- * Parse CIDR notation with validation
- */
-static traffic_selector_t *parse_cidr(const char *cidr)
-{
-	char *slash, *ip_str;
-	int prefix = 32;
-	host_t *host;
-	traffic_selector_t *ts = NULL;
-
-	if (!cidr || !*cidr)
-	{
-		DBG1(DBG_NET, "dhcp-inform: CORRUPTED DATA - empty CIDR");
-		return NULL;
-	}
-
-	if (strlen(cidr) > 43)  /* max: xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx/128 */
-	{
-		DBG1(DBG_NET, "dhcp-inform: CORRUPTED DATA - CIDR too long: %.20s...", cidr);
-		return NULL;
-	}
-
-	ip_str = strdup(cidr);
-	if (!ip_str)
-	{
-		DBG1(DBG_NET, "dhcp-inform: memory allocation failed");
-		return NULL;
-	}
-
-	slash = strchr(ip_str, '/');
-	if (slash)
-	{
-		*slash = '\0';
-		prefix = atoi(slash + 1);
-		if (prefix < 0 || prefix > 32)
-		{
-			DBG1(DBG_NET, "dhcp-inform: CORRUPTED DATA - invalid prefix %d in %s", prefix, cidr);
-			free(ip_str);
-			return NULL;
-		}
-	}
-
-	host = host_create_from_string(ip_str, 0);
-	if (!host)
-	{
-		DBG1(DBG_NET, "dhcp-inform: CORRUPTED DATA - invalid IP in CIDR: %s", ip_str);
-		free(ip_str);
-		return NULL;
-	}
-
-	ts = traffic_selector_create_from_subnet(host, prefix, 0, 0, 65535);
-	host->destroy(host);
-	if (!ts)
-	{
-		DBG1(DBG_NET, "dhcp-inform: failed to create traffic selector for %s", cidr);
-	}
-
-	free(ip_str);
-	return ts;
-}
-
-/**
  * Check if traffic selector already exists in list (deduplication)
  */
 static bool route_exists_in_list(linked_list_t *list, traffic_selector_t *ts)

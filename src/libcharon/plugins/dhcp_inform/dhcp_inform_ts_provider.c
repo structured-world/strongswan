@@ -39,6 +39,7 @@ struct private_dhcp_inform_ts_provider_t {
  */
 static bool is_valid_route_ts(traffic_selector_t *ts)
 {
+	host_t *net;
 	uint8_t mask;
 
 	if (ts->get_type(ts) != TS_IPV4_ADDR_RANGE)
@@ -47,7 +48,13 @@ static bool is_valid_route_ts(traffic_selector_t *ts)
 		return FALSE;
 	}
 
-	mask = ts->get_netmask(ts);
+	/* Convert to subnet to get the mask */
+	if (!ts->to_subnet(ts, &net, &mask))
+	{
+		/* Not a valid subnet */
+		return FALSE;
+	}
+	net->destroy(net);
 
 	/* Skip default route (0.0.0.0/0) - we don't want to push that */
 	if (mask == 0)
@@ -103,7 +110,7 @@ static linked_list_t *extract_ts_from_ike_sa(const char *client_ip)
 		return routes;
 	}
 
-	client_vip = host_create_from_string(client_ip, 0);
+	client_vip = host_create_from_string((char*)client_ip, 0);
 	if (!client_vip)
 	{
 		DBG1(DBG_CFG, "dhcp-inform-ts: invalid client IP: %s", client_ip);

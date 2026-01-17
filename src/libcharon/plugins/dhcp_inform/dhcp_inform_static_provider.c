@@ -360,7 +360,7 @@ METHOD(dhcp_inform_provider_t, get_routes, linked_list_t*,
 		return linked_list_create();
 	}
 
-	client = host_create_from_string(client_ip, 0);
+	client = host_create_from_string((char*)client_ip, 0);
 	if (!client)
 	{
 		DBG1(DBG_CFG, "dhcp-inform: invalid client IP: %s", client_ip);
