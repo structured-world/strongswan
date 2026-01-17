@@ -140,6 +140,7 @@ done
 %files
 %license COPYING
 %doc README NEWS
+# Configuration directories
 %dir %{_sysconfdir}/strongswan
 %dir %{_sysconfdir}/strongswan/ipsec.d
 %dir %attr(700,root,root) %{_sysconfdir}/strongswan/ipsec.d/aacerts
@@ -151,19 +152,48 @@ done
 %dir %attr(700,root,root) %{_sysconfdir}/strongswan/ipsec.d/private
 %dir %attr(700,root,root) %{_sysconfdir}/strongswan/ipsec.d/reqs
 %dir %{_sysconfdir}/swanctl
+%dir %{_sysconfdir}/swanctl/bliss
 %dir %{_sysconfdir}/swanctl/conf.d
+%dir %{_sysconfdir}/swanctl/ecdsa
+%dir %{_sysconfdir}/swanctl/pkcs8
+%dir %{_sysconfdir}/swanctl/pkcs12
+%dir %{_sysconfdir}/swanctl/private
+%dir %{_sysconfdir}/swanctl/pubkey
+%dir %{_sysconfdir}/swanctl/rsa
+%dir %{_sysconfdir}/swanctl/x509
+%dir %{_sysconfdir}/swanctl/x509aa
+%dir %{_sysconfdir}/swanctl/x509ac
+%dir %{_sysconfdir}/swanctl/x509ca
+%dir %{_sysconfdir}/swanctl/x509crl
+%dir %{_sysconfdir}/swanctl/x509ocsp
 %config(noreplace) %{_sysconfdir}/strongswan.conf
 %config(noreplace) %{_sysconfdir}/strongswan.d
-%{_sysconfdir}/swanctl/*
+%config(noreplace) %{_sysconfdir}/swanctl/swanctl.conf
+# Binaries
+%{_bindir}/pki
+%{_sbindir}/swanctl
+%{_sbindir}/charon-systemd
+# Systemd service
 %{_unitdir}/strongswan.service
-%{_sbindir}/*
+# Libraries and plugins
 %dir %{_libdir}/ipsec
 %dir %{_libdir}/ipsec/plugins
-%{_libdir}/ipsec/*
+%{_libdir}/ipsec/libcharon.so.0
+%{_libdir}/ipsec/libcharon.so.0.0.0
+%{_libdir}/ipsec/libstrongswan.so.0
+%{_libdir}/ipsec/libstrongswan.so.0.0.0
+%{_libdir}/ipsec/libvici.so.0
+%{_libdir}/ipsec/libvici.so.0.0.0
+%{_libdir}/ipsec/plugins/libstrongswan-*.so
 %exclude %{_libdir}/ipsec/plugins/libstrongswan-pgsql.so
 %exclude %{_libdir}/ipsec/plugins/libstrongswan-dhcp-inform.so
+# Data files
 %{_datadir}/strongswan
-%{_mandir}/man?/*
+# Man pages
+%{_mandir}/man1/pki*.1*
+%{_mandir}/man5/strongswan.conf.5*
+%{_mandir}/man5/swanctl.conf.5*
+%{_mandir}/man8/swanctl.8*
 
 %files -n strongswan-pgsql
 %{_libdir}/ipsec/plugins/libstrongswan-pgsql.so
