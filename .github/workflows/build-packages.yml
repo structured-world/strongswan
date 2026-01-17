@@ -1,6 +1,9 @@
 name: Build Packages
 
 on:
+  pull_request:
+    branches: [sw]
+    types: [closed]
   workflow_call:
     inputs:
       upstream_version:
@@ -16,6 +19,8 @@ on:
 
 jobs:
   prepare:
+    # Run only on merged PRs, workflow_call, or workflow_dispatch
+    if: github.event.pull_request.merged == true || github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -25,6 +30,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Determine version
         id: version
@@ -36,15 +44,30 @@ jobs:
             UPSTREAM_VERSION=$(grep -m1 'AC_INIT' configure.ac | sed -E 's/.*\[([0-9]+\.[0-9]+\.[0-9]+)\].*/\1/')
           fi
 
+          # Count PR merges after upstream tag to determine SW revision number
+          # GitHub adds "(#N)" suffix on squash merge, so we count those
+          # This auto-increments: sw.1 -> sw.2 -> sw.3 on each PR merge to sw branch
+          # When upstream releases new version, we rebase and SW_REV resets to 1
+          if git rev-parse "${UPSTREAM_VERSION}" >/dev/null 2>&1; then
+            # Tag exists - count squash merged PRs (commits with (#N) suffix)
+            SW_REV=$(git log "${UPSTREAM_VERSION}..HEAD" --oneline | grep -c '(#[0-9]*)$' || echo 0)
+            # At least 1 if we have any changes
+            [ "$SW_REV" -eq 0 ] && SW_REV=1
+          else
+            # No tag yet - use 1
+            SW_REV=1
+          fi
+
           # SW version for DEB: upstream-sw.N (dashes allowed)
-          VERSION="${UPSTREAM_VERSION}-sw.1"
+          VERSION="${UPSTREAM_VERSION}-sw.${SW_REV}"
           # SW version for RPM: upstream.sw.N (no dashes allowed in Version field)
-          RPM_VERSION="${UPSTREAM_VERSION}.sw.1"
+          RPM_VERSION="${UPSTREAM_VERSION}.sw.${SW_REV}"
 
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "rpm_version=$RPM_VERSION" >> $GITHUB_OUTPUT
           echo "upstream_version=$UPSTREAM_VERSION" >> $GITHUB_OUTPUT
-          echo "Building version: $VERSION / RPM: $RPM_VERSION (based on upstream $UPSTREAM_VERSION)"
+          echo "sw_rev=$SW_REV" >> $GITHUB_OUTPUT
+          echo "Building version: $VERSION / RPM: $RPM_VERSION (upstream $UPSTREAM_VERSION + $SW_REV merges)"
 
   build-deb:
     needs: prepare
