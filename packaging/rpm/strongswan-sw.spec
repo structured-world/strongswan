@@ -134,10 +134,17 @@ done
 %doc README NEWS
 %dir %{_sysconfdir}/strongswan
 %dir %{_sysconfdir}/strongswan/ipsec.d
+%dir %attr(700,root,root) %{_sysconfdir}/strongswan/ipsec.d/aacerts
+%dir %attr(700,root,root) %{_sysconfdir}/strongswan/ipsec.d/acerts
+%dir %attr(700,root,root) %{_sysconfdir}/strongswan/ipsec.d/certs
+%dir %attr(700,root,root) %{_sysconfdir}/strongswan/ipsec.d/cacerts
+%dir %attr(700,root,root) %{_sysconfdir}/strongswan/ipsec.d/crls
+%dir %attr(700,root,root) %{_sysconfdir}/strongswan/ipsec.d/ocspcerts
+%dir %attr(700,root,root) %{_sysconfdir}/strongswan/ipsec.d/private
+%dir %attr(700,root,root) %{_sysconfdir}/strongswan/ipsec.d/reqs
 %dir %{_sysconfdir}/strongswan/swanctl
 %config(noreplace) %{_sysconfdir}/strongswan/*.conf
 %config(noreplace) %{_sysconfdir}/strongswan/strongswan.d
-%{_sysconfdir}/strongswan/ipsec.d/*
 %{_sysconfdir}/strongswan/swanctl/*
 %{_unitdir}/strongswan.service
 %{_unitdir}/strongswan-swanctl.service
@@ -166,5 +173,7 @@ done
 %systemd_postun_with_restart strongswan.service strongswan-swanctl.service
 
 %changelog
+# Note: Dynamic date is intentional - changelog reflects actual build date
+# For reproducible builds, use SOURCE_DATE_EPOCH environment variable
 * %(date "+%a %b %d %Y") SW Foundation <dev@sw.foundation> - %{version}-%{release}
 - strongSwan SW fork release

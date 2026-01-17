@@ -81,7 +81,7 @@ jobs:
           echo "rpm_version=$RPM_VERSION" >> $GITHUB_OUTPUT
           echo "upstream_version=$UPSTREAM_VERSION" >> $GITHUB_OUTPUT
           echo "sw_rev=$SW_REV" >> $GITHUB_OUTPUT
-          echo "Building version: $VERSION / RPM: $RPM_VERSION (upstream $UPSTREAM_VERSION + $SW_REV merges)"
+          echo "Building version: $VERSION / RPM: $RPM_VERSION (upstream $UPSTREAM_VERSION, SW revision $SW_REV)"
 
   build-deb:
     needs: prepare
@@ -353,7 +353,10 @@ jobs:
           UPSTREAM: ${{ needs.prepare.outputs.upstream_version }}
           SW_REV: ${{ needs.prepare.outputs.sw_rev }}
         run: |
-          # Configure git safe directory (required for newer git in containers)
+          # Configure git for container environment
+          # - safe.directory: required for newer git security checks
+          # - user.email/name: required if git init is needed
+          # - init.defaultBranch: avoid warnings on git init
           git config --global init.defaultBranch main
           git config --global user.email "build@sw.foundation"
           git config --global user.name "Build"
@@ -375,7 +378,10 @@ jobs:
           # Create source tarball from git
           # NOTE: This naming must match packaging/rpm/strongswan-sw.spec Source0 and %autosetup
           SOURCE_NAME="strongswan-${UPSTREAM}-sw.${SW_REV}"
-          git archive --format=tar.gz --prefix="${SOURCE_NAME}/" HEAD > ~/rpmbuild/SOURCES/${SOURCE_NAME}.tar.gz
+          if ! git archive --format=tar.gz --prefix="${SOURCE_NAME}/" HEAD > ~/rpmbuild/SOURCES/${SOURCE_NAME}.tar.gz; then
+            echo "ERROR: Failed to create source tarball" >&2
+            exit 1
+          fi
 
           # Copy spec file from repository
           cp packaging/rpm/strongswan-sw.spec ~/rpmbuild/SPECS/
