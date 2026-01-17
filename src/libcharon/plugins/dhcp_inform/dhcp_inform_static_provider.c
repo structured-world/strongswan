@@ -74,13 +74,18 @@ static void pool_entry_destroy(pool_entry_t *entry)
 	}
 }
 
+/* Maximum CIDR string length: "xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx/128" = 43 chars */
+#define MAX_CIDR_LEN 43
+
 /**
- * Parse CIDR notation to traffic_selector
+ * Parse CIDR notation to traffic_selector.
+ * Note: This function is intentionally duplicated in each provider file to keep
+ * providers self-contained and independently compilable without shared utilities.
  */
 static traffic_selector_t *parse_cidr(const char *cidr)
 {
-	char *slash, *ip_str;
-	int prefix = 32;
+	char *slash, *ip_str, *endptr;
+	long prefix = 32;
 	host_t *host;
 	traffic_selector_t *ts = NULL;
 
@@ -89,7 +94,7 @@ static traffic_selector_t *parse_cidr(const char *cidr)
 		return NULL;
 	}
 
-	if (strlen(cidr) > 43)
+	if (strlen(cidr) > MAX_CIDR_LEN)
 	{
 		DBG1(DBG_CFG, "dhcp-inform: CIDR too long: %.20s...", cidr);
 		return NULL;
@@ -105,10 +110,10 @@ static traffic_selector_t *parse_cidr(const char *cidr)
 	if (slash)
 	{
 		*slash = '\0';
-		prefix = atoi(slash + 1);
-		if (prefix < 0 || prefix > 32)
+		prefix = strtol(slash + 1, &endptr, 10);
+		if (*endptr != '\0' || prefix < 0 || prefix > 32)
 		{
-			DBG1(DBG_CFG, "dhcp-inform: invalid prefix %d in %s", prefix, cidr);
+			DBG1(DBG_CFG, "dhcp-inform: invalid prefix in %s", cidr);
 			free(ip_str);
 			return NULL;
 		}
@@ -134,8 +139,8 @@ static traffic_selector_t *parse_cidr(const char *cidr)
  */
 static bool parse_cidr_to_host(const char *cidr, host_t **host, uint8_t *prefix)
 {
-	char *slash, *ip_str;
-	int pfx = 32;
+	char *slash, *ip_str, *endptr;
+	long pfx = 32;
 
 	if (!cidr || !*cidr)
 	{
@@ -152,8 +157,8 @@ static bool parse_cidr_to_host(const char *cidr, host_t **host, uint8_t *prefix)
 	if (slash)
 	{
 		*slash = '\0';
-		pfx = atoi(slash + 1);
-		if (pfx < 0 || pfx > 32)
+		pfx = strtol(slash + 1, &endptr, 10);
+		if (*endptr != '\0' || pfx < 0 || pfx > 32)
 		{
 			free(ip_str);
 			return FALSE;
@@ -201,7 +206,7 @@ static bool ip_in_subnet(host_t *ip, host_t *network, uint8_t prefix)
 	ip_ptr = ip_addr.ptr;
 	net_ptr = net_addr.ptr;
 
-	/* Compare full bytes */
+	/* Compare full bytes. Cast is safe: ip_addr.len is always <= 16 (IPv6) */
 	for (i = 0; i < bytes && i < (int)ip_addr.len; i++)
 	{
 		if (ip_ptr[i] != net_ptr[i])
@@ -210,7 +215,7 @@ static bool ip_in_subnet(host_t *ip, host_t *network, uint8_t prefix)
 		}
 	}
 
-	/* Compare remaining bits */
+	/* Compare remaining bits. Cast is safe: ip_addr.len is always <= 16 (IPv6) */
 	if (bits > 0 && bytes < (int)ip_addr.len)
 	{
 		mask = 0xFF << (8 - bits);
@@ -234,6 +239,10 @@ static linked_list_t *load_routes_from_section(const char *section)
 	int count = 0;
 
 	routes = linked_list_create();
+	if (!routes)
+	{
+		return NULL;
+	}
 
 	enumerator = lib->settings->create_key_value_enumerator(lib->settings,
 		"%s.plugins.dhcp-inform.%s", lib->ns, section);
@@ -301,8 +310,14 @@ static void load_pools(private_dhcp_inform_static_provider_t *this)
 			.prefix = prefix,
 		);
 
-		snprintf(routes_section, sizeof(routes_section),
-				 "pools.%s.routes", pool_name);
+		if (snprintf(routes_section, sizeof(routes_section),
+				 "pools.%s.routes", pool_name) >= (int)sizeof(routes_section))
+		{
+			DBG1(DBG_CFG, "dhcp-inform: pool name '%s' too long, skipping",
+				 pool_name);
+			pool_entry_destroy(entry);
+			continue;
+		}
 		entry->routes = load_routes_from_section(routes_section);
 
 		if (entry->routes->get_count(entry->routes) > 0)
@@ -332,6 +347,10 @@ static linked_list_t *clone_routes(linked_list_t *source)
 	traffic_selector_t *ts;
 
 	cloned = linked_list_create();
+	if (!cloned)
+	{
+		return NULL;
+	}
 	enumerator = source->create_enumerator(source);
 	while (enumerator->enumerate(enumerator, &ts))
 	{

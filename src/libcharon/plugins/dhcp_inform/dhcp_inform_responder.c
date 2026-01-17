@@ -204,23 +204,25 @@ static void add_routes_from_provider(dhcp_inform_provider_t *provider,
 		return;
 	}
 
+	/* Transfer ownership: routes go to target list or get destroyed if duplicate.
+	 * After this loop, provider_routes list is empty of responsibility. */
 	enumerator = provider_routes->create_enumerator(provider_routes);
 	while (enumerator->enumerate(enumerator, &ts))
 	{
 		if (route_exists_in_list(routes, ts))
 		{
 			duplicates++;
-			ts->destroy(ts);
+			ts->destroy(ts);  /* Duplicate - destroy immediately */
 		}
 		else
 		{
-			routes->insert_last(routes, ts);
+			routes->insert_last(routes, ts);  /* Transfer ownership to target */
 			added++;
 		}
 	}
 	enumerator->destroy(enumerator);
 
-	/* Just destroy the list, not the routes (we moved ownership) */
+	/* Destroy list structure only - elements already handled above */
 	provider_routes->destroy(provider_routes);
 
 	if (added > 0 || duplicates > 0)
@@ -238,7 +240,8 @@ static void add_routes_from_provider(dhcp_inform_provider_t *provider,
  * 2. DB routes - when database configured, ONLY database routes
  * 3. Static routes - when no DB, use config routes with per-pool overrides
  *
- * Modes are exclusive - they never combine.
+ * Modes are exclusive - if multiple are configured, highest priority wins.
+ * This is intentional: config errors don't crash, just use first available mode.
  */
 static linked_list_t *get_routes_for_client(private_dhcp_inform_responder_t *this,
 											const char *client_ip)

@@ -66,7 +66,8 @@ static bool is_valid_route_ts(traffic_selector_t *ts)
 }
 
 /**
- * Check if traffic selector already exists in list (deduplication)
+ * Check if traffic selector already exists in list (deduplication).
+ * Note: Duplicated for self-contained provider compilation.
  */
 static bool ts_exists_in_list(linked_list_t *list, traffic_selector_t *ts)
 {
@@ -103,6 +104,10 @@ static linked_list_t *extract_ts_from_ike_sa(const char *client_ip)
 	int route_count = 0;
 
 	routes = linked_list_create();
+	if (!routes)
+	{
+		return NULL;
+	}
 
 	if (!client_ip)
 	{

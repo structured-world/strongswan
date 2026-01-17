@@ -22,15 +22,18 @@ typedef struct dhcp_inform_db_provider_t dhcp_inform_db_provider_t;
 /**
  * Database route provider - reads routes from SQL database.
  *
- * Supports PostgreSQL, MySQL, SQLite via strongSwan database abstraction.
- * Queries routes from v_pool_routes view based on client virtual IP.
+ * Works with PostgreSQL, MySQL, SQLite via strongSwan database abstraction.
+ * Uses portable SQL; IP-in-CIDR filtering done in C for compatibility.
  *
  * Configuration:
  *   charon.plugins.dhcp-inform.database = pgsql://user:pass@host/db
+ *   charon.plugins.dhcp-inform.database = mysql://user:pass@host/db
+ *   charon.plugins.dhcp-inform.database = sqlite:///path/to/db.sqlite
  *
  * Required database schema:
- *   VIEW v_pool_routes (pool_cidr, route)
- *   - Returns routes for pools, client IP matched against pool_cidr
+ *   VIEW v_pool_routes (pool_cidr TEXT, route TEXT)
+ *   - pool_cidr: CIDR notation (e.g., "10.0.0.0/8")
+ *   - route: route to push to clients in this pool (CIDR notation)
  */
 struct dhcp_inform_db_provider_t {
 

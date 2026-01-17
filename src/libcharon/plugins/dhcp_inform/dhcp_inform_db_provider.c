@@ -33,62 +33,125 @@ struct private_dhcp_inform_db_provider_t {
 	database_t *db;
 };
 
+/* Maximum CIDR string length: "xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx/128" = 43 chars */
+#define MAX_CIDR_LEN 43
+
 /**
- * Parse CIDR notation to traffic_selector
+ * Parse CIDR to host and prefix.
  */
-static traffic_selector_t *parse_cidr(const char *cidr)
+static bool parse_cidr_to_host(const char *cidr, host_t **host, uint8_t *prefix)
 {
-	char *slash, *ip_str;
-	int prefix = 32;
-	host_t *host;
-	traffic_selector_t *ts = NULL;
+	char *slash, *ip_str, *endptr;
+	long pfx = 32;
 
-	if (!cidr || !*cidr)
+	if (!cidr || !*cidr || strlen(cidr) > MAX_CIDR_LEN)
 	{
-		DBG1(DBG_CFG, "dhcp-inform-db: CORRUPTED DATA - empty CIDR");
-		return NULL;
-	}
-
-	if (strlen(cidr) > 43)
-	{
-		DBG1(DBG_CFG, "dhcp-inform-db: CORRUPTED DATA - CIDR too long: %.20s...",
-			 cidr);
-		return NULL;
+		return FALSE;
 	}
 
 	ip_str = strdup(cidr);
 	if (!ip_str)
 	{
-		return NULL;
+		return FALSE;
 	}
 
 	slash = strchr(ip_str, '/');
 	if (slash)
 	{
 		*slash = '\0';
-		prefix = atoi(slash + 1);
-		if (prefix < 0 || prefix > 32)
+		pfx = strtol(slash + 1, &endptr, 10);
+		if (*endptr != '\0' || pfx < 0 || pfx > 32)
 		{
-			DBG1(DBG_CFG, "dhcp-inform-db: invalid prefix %d in %s",
-				 prefix, cidr);
 			free(ip_str);
-			return NULL;
+			return FALSE;
 		}
 	}
 
-	host = host_create_from_string(ip_str, 0);
-	if (!host)
+	*host = host_create_from_string(ip_str, 0);
+	free(ip_str);
+
+	if (!*host)
 	{
-		DBG1(DBG_CFG, "dhcp-inform-db: invalid IP in CIDR: %s", ip_str);
-		free(ip_str);
+		return FALSE;
+	}
+
+	*prefix = pfx;
+	return TRUE;
+}
+
+/**
+ * Parse CIDR notation to traffic_selector.
+ * Note: This function is intentionally duplicated in each provider file to keep
+ * providers self-contained and independently compilable without shared utilities.
+ */
+static traffic_selector_t *parse_cidr(const char *cidr)
+{
+	host_t *host;
+	uint8_t prefix;
+	traffic_selector_t *ts;
+
+	if (!parse_cidr_to_host(cidr, &host, &prefix))
+	{
+		DBG1(DBG_CFG, "dhcp-inform-db: failed to parse CIDR: %s", cidr);
 		return NULL;
 	}
 
 	ts = traffic_selector_create_from_subnet(host, prefix, 0, 0, 65535);
 	host->destroy(host);
-	free(ip_str);
 
 	return ts;
+}
+
+/**
+ * Check if an IP address falls within a network/prefix.
+ * Note: Duplicated from static_provider for self-contained compilation.
+ */
+static bool ip_in_subnet(host_t *ip, host_t *network, uint8_t prefix)
+{
+	chunk_t ip_addr, net_addr;
+	uint8_t *ip_ptr, *net_ptr;
+	int bytes, bits, i;
+	uint8_t mask;
+
+	if (ip->get_family(ip) != network->get_family(network))
+	{
+		return FALSE;
+	}
+
+	ip_addr = ip->get_address(ip);
+	net_addr = network->get_address(network);
+
+	if (ip_addr.len != net_addr.len)
+	{
+		return FALSE;
+	}
+
+	bytes = prefix / 8;
+	bits = prefix % 8;
+
+	ip_ptr = ip_addr.ptr;
+	net_ptr = net_addr.ptr;
+
+	/* Compare full bytes. Cast is safe: ip_addr.len is always <= 16 (IPv6) */
+	for (i = 0; i < bytes && i < (int)ip_addr.len; i++)
+	{
+		if (ip_ptr[i] != net_ptr[i])
+		{
+			return FALSE;
+		}
+	}
+
+	/* Compare remaining bits */
+	if (bits > 0 && bytes < (int)ip_addr.len)
+	{
+		mask = 0xFF << (8 - bits);
+		if ((ip_ptr[bytes] & mask) != (net_ptr[bytes] & mask))
+		{
+			return FALSE;
+		}
+	}
+
+	return TRUE;
 }
 
 METHOD(dhcp_inform_provider_t, get_routes, linked_list_t*,
@@ -96,11 +159,15 @@ METHOD(dhcp_inform_provider_t, get_routes, linked_list_t*,
 {
 	linked_list_t *routes;
 	enumerator_t *enumerator;
-	char *route_value;
-	int routes_parsed = 0;
-	int routes_failed = 0;
+	char *pool_cidr, *route_value;
+	host_t *client;
+	int routes_added = 0;
 
 	routes = linked_list_create();
+	if (!routes)
+	{
+		return NULL;
+	}
 
 	if (!this->db)
 	{
@@ -109,77 +176,73 @@ METHOD(dhcp_inform_provider_t, get_routes, linked_list_t*,
 
 	if (!client_ip || !*client_ip)
 	{
-		DBG1(DBG_CFG, "dhcp-inform-db: CORRUPTED DATA - empty client IP");
+		DBG1(DBG_CFG, "dhcp-inform-db: empty client IP");
+		return routes;
+	}
+
+	client = host_create_from_string((char*)client_ip, 0);
+	if (!client)
+	{
+		DBG1(DBG_CFG, "dhcp-inform-db: invalid client IP: %s", client_ip);
 		return routes;
 	}
 
 	DBG2(DBG_CFG, "dhcp-inform-db: looking up routes for IP %s", client_ip);
 
-	/* Query routes for the pool that contains this IP
-	 * Uses v_pool_routes VIEW: (pool_cidr, route)
+	/* Query all pool/route pairs, filter in C for database portability.
+	 * Uses v_pool_routes VIEW: (pool_cidr, route).
+	 * Works with PostgreSQL, MySQL, SQLite via strongSwan database abstraction.
 	 */
 	enumerator = this->db->query(this->db,
-		"SELECT route FROM v_pool_routes WHERE ?::inet << pool_cidr::inet",
-		DB_TEXT, client_ip,
-		DB_TEXT);
+		"SELECT pool_cidr, route FROM v_pool_routes",
+		DB_TEXT, DB_TEXT);
 
 	if (!enumerator)
 	{
-		DBG2(DBG_CFG, "dhcp-inform-db: primary query failed, trying fallback");
-		/* Fallback: get routes from auto_ip_pools directly */
-		enumerator = this->db->query(this->db,
-			"SELECT unnest(aip.routes) as route "
-			"FROM auto_ip_pools aip "
-			"JOIN environments e ON e.auto_ip_pool_id = aip.id "
-			"WHERE e.is_active = true "
-			"AND ?::inet << aip.cidr::inet",
-			DB_TEXT, client_ip,
-			DB_TEXT);
-	}
-
-	if (!enumerator)
-	{
-		DBG1(DBG_CFG, "dhcp-inform-db: all queries failed for %s", client_ip);
+		DBG1(DBG_CFG, "dhcp-inform-db: query failed");
+		client->destroy(client);
 		return routes;
 	}
 
-	while (enumerator->enumerate(enumerator, &route_value))
+	while (enumerator->enumerate(enumerator, &pool_cidr, &route_value))
 	{
+		host_t *pool_net;
+		uint8_t pool_prefix;
 		traffic_selector_t *ts;
 
-		routes_parsed++;
-
-		if (!route_value)
+		if (!pool_cidr || !route_value)
 		{
-			DBG1(DBG_CFG, "dhcp-inform-db: CORRUPTED DATA - NULL route at row %d",
-				 routes_parsed);
-			routes_failed++;
 			continue;
 		}
 
+		/* Parse pool CIDR and check if client IP is in this pool */
+		if (!parse_cidr_to_host(pool_cidr, &pool_net, &pool_prefix))
+		{
+			DBG2(DBG_CFG, "dhcp-inform-db: invalid pool CIDR: %s", pool_cidr);
+			continue;
+		}
+
+		if (!ip_in_subnet(client, pool_net, pool_prefix))
+		{
+			pool_net->destroy(pool_net);
+			continue;
+		}
+		pool_net->destroy(pool_net);
+
+		/* Client is in this pool - add the route */
 		ts = parse_cidr(route_value);
 		if (ts)
 		{
 			routes->insert_last(routes, ts);
-			DBG2(DBG_CFG, "dhcp-inform-db: added route %s", route_value);
-		}
-		else
-		{
-			DBG1(DBG_CFG, "dhcp-inform-db: failed to parse route: %s",
-				 route_value);
-			routes_failed++;
+			routes_added++;
+			DBG2(DBG_CFG, "dhcp-inform-db: added route %s from pool %s",
+				 route_value, pool_cidr);
 		}
 	}
 	enumerator->destroy(enumerator);
+	client->destroy(client);
 
-	if (routes_failed > 0)
-	{
-		DBG1(DBG_CFG, "dhcp-inform-db: WARNING - %d/%d routes had corrupted data",
-			 routes_failed, routes_parsed);
-	}
-
-	DBG1(DBG_CFG, "dhcp-inform-db: found %d valid routes for %s",
-		 routes->get_count(routes), client_ip);
+	DBG1(DBG_CFG, "dhcp-inform-db: found %d routes for %s", routes_added, client_ip);
 
 	return routes;
 }
