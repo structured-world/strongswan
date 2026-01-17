@@ -119,6 +119,7 @@ static linked_list_t *extract_ts_from_ike_sa(const char *client_ip)
 	if (!client_vip)
 	{
 		DBG1(DBG_CFG, "dhcp-inform-ts: invalid client IP: %s", client_ip);
+		/* Return empty list - caller handles empty routes gracefully */
 		return routes;
 	}
 

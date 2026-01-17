@@ -83,6 +83,10 @@ static void pool_entry_destroy(pool_entry_t *entry)
  * Parse CIDR notation to traffic_selector.
  * Note: This function is intentionally duplicated in each provider file to keep
  * providers self-contained and independently compilable without shared utilities.
+ *
+ * Prefix 0 (/0, default route) is allowed here for admin flexibility.
+ * The TS provider filters out /0 routes since we don't want to push
+ * default routes extracted from traffic selectors.
  */
 static traffic_selector_t *parse_cidr(const char *cidr)
 {
@@ -137,7 +141,9 @@ static traffic_selector_t *parse_cidr(const char *cidr)
 }
 
 /**
- * Parse CIDR to host and prefix for pool matching
+ * Parse CIDR to host and prefix for pool matching.
+ * Prefix 0 (match-all) is allowed for admin flexibility.
+ * Note: Duplicated for self-contained compilation (see parse_cidr comment).
  */
 static bool parse_cidr_to_host(const char *cidr, host_t **host, uint8_t *prefix)
 {

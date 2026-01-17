@@ -40,6 +40,8 @@ struct private_dhcp_inform_db_provider_t {
 
 /**
  * Parse CIDR to host and prefix.
+ * Prefix 0 (match-all) is allowed for admin flexibility.
+ * Note: Duplicated for self-contained compilation (see static_provider).
  */
 static bool parse_cidr_to_host(const char *cidr, host_t **host, uint8_t *prefix)
 {
