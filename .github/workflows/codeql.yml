@@ -42,6 +42,14 @@ jobs:
             echo "No CodeQL-relevant paths changed, skipping analysis"
           fi
 
+      # Upload empty SARIF when skipping to satisfy code scanning requirements
+      - name: Upload empty SARIF (skip case)
+        if: steps.filter.outputs.codeql != 'true'
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ${{ github.workspace }}/.github/codeql/empty.sarif
+          category: "/language:cpp"
+
   analyze:
     name: Analyze
     needs: changes
