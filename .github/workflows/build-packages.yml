@@ -477,7 +477,7 @@ jobs:
       - name: Clone repository
         uses: actions/checkout@v4
         with:
-          repository: structured-world/strongswan-sw-repo
+          repository: structured-world/repo
           token: ${{ secrets.REPO_TOKEN }}
           path: repo
 
@@ -665,12 +665,12 @@ jobs:
 
           ### Installation
 
-          Packages are available from the [strongswan-sw-repo](https://github.com/structured-world/strongswan-sw-repo).
+          Packages are available from the [repo](https://github.com/structured-world/repo).
 
           **Fedora/RHEL:**
           ```bash
           # Add repository (one-time setup)
-          sudo dnf config-manager --add-repo https://structured-world.github.io/strongswan-sw-repo/rpm/fc\$releasever/strongswan-sw.repo
+          sudo dnf config-manager --add-repo https://structured-world.github.io/repo/rpm/fc\$releasever/strongswan-sw.repo
 
           # Install
           sudo dnf install strongswan-sw
@@ -679,8 +679,8 @@ jobs:
           **Ubuntu/Debian:**
           ```bash
           # Add repository (one-time setup)
-          curl -fsSL https://structured-world.github.io/strongswan-sw-repo/deb/gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/strongswan-sw.gpg
-          echo "deb [signed-by=/usr/share/keyrings/strongswan-sw.gpg] https://structured-world.github.io/strongswan-sw-repo/deb $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/strongswan-sw.list
+          curl -fsSL https://structured-world.github.io/repo/deb/gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/strongswan-sw.gpg
+          echo "deb [signed-by=/usr/share/keyrings/strongswan-sw.gpg] https://structured-world.github.io/repo/deb $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/strongswan-sw.list
 
           # Install
           sudo apt update && sudo apt install strongswan-sw
