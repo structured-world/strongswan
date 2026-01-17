@@ -32,6 +32,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          # For PR merge events, checkout the target branch to get accurate commit count
+          ref: ${{ github.event.pull_request.base.ref || 'sw' }}
           fetch-depth: 0
           fetch-tags: true
 
@@ -51,8 +53,8 @@ jobs:
           # When upstream releases new version, we rebase and SW_REV resets to 1
           if git rev-parse "${UPSTREAM_VERSION}" >/dev/null 2>&1; then
             # Tag exists - count squash merged PRs (commits with (#N) suffix)
-            SW_REV=$(git log "${UPSTREAM_VERSION}..HEAD" --oneline | grep -c '(#[0-9]*)$' || echo 0)
-            # At least 1 if we have any changes
+            SW_REV=$(git log "${UPSTREAM_VERSION}..HEAD" --oneline | grep -c '(#[0-9]\+)$' || echo 0)
+            # Default to 1 if no PR merges found (minimum is sw.1)
             [ "$SW_REV" -eq 0 ] && SW_REV=1
           else
             # No tag yet - use 1
