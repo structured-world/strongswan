@@ -1,24 +1,12 @@
 name: "CodeQL"
 
-# Only run on PRs to sw branch and pushes to sw branch
-# Scoped to our fork-specific changes only
+# Run on all PRs to sw branch - use path filter inside job
+# This ensures the check always reports a status (success or skipped)
 on:
   push:
     branches: [sw]
-    paths:
-      - 'src/libstrongswan/plugins/pgsql/**'
-      - 'src/libstrongswan/database/**'
-      - 'src/libstrongswan/networking/streams/stream_service_unix.c'
-      - 'src/libcharon/plugins/dhcp_inform/**'
-      - 'configure.ac'
   pull_request:
     branches: [sw]
-    paths:
-      - 'src/libstrongswan/plugins/pgsql/**'
-      - 'src/libstrongswan/database/**'
-      - 'src/libstrongswan/networking/streams/stream_service_unix.c'
-      - 'src/libcharon/plugins/dhcp_inform/**'
-      - 'configure.ac'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -28,8 +16,36 @@ env:
   CCACHE_DISABLE: true
 
 jobs:
-  analyze:
+  # Check if CodeQL-relevant paths were changed
+  changes:
     name: CodeQL
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.filter.outputs.codeql }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            codeql:
+              - 'src/libstrongswan/plugins/pgsql/**'
+              - 'src/libstrongswan/database/**'
+              - 'src/libstrongswan/networking/streams/stream_service_unix.c'
+              - 'src/libcharon/plugins/dhcp_inform/**'
+              - 'configure.ac'
+      - name: Report status
+        run: |
+          if [ "${{ steps.filter.outputs.codeql }}" == "true" ]; then
+            echo "CodeQL-relevant paths changed, will run analysis"
+          else
+            echo "No CodeQL-relevant paths changed, skipping analysis"
+          fi
+
+  analyze:
+    name: Analyze
+    needs: changes
+    if: needs.changes.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     permissions:
       actions: read
