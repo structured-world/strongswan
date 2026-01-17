@@ -47,6 +47,12 @@ jobs:
             UPSTREAM_VERSION=$(grep -m1 'AC_INIT' configure.ac | sed -E 's/.*\[([0-9]+\.[0-9]+\.[0-9]+)\].*/\1/')
           fi
 
+          # Validate UPSTREAM_VERSION is not empty and matches expected format
+          if [[ ! "$UPSTREAM_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "ERROR: Invalid UPSTREAM_VERSION: '$UPSTREAM_VERSION'" >&2
+            exit 1
+          fi
+
           # Count PR merges after upstream tag to determine SW revision number
           # GitHub adds "(#N)" suffix on squash merge, so we count those
           # This auto-increments: sw.1 -> sw.2 -> sw.3 on each PR merge to sw branch
@@ -362,6 +368,7 @@ jobs:
           rpmdev-setuptree
 
           # Create source tarball from git
+          # NOTE: This naming must match packaging/rpm/strongswan-sw.spec Source0 and %autosetup
           SOURCE_NAME="strongswan-${UPSTREAM}-sw.${SW_REV}"
           git archive --format=tar.gz --prefix="${SOURCE_NAME}/" HEAD > ~/rpmbuild/SOURCES/${SOURCE_NAME}.tar.gz
 
@@ -551,10 +558,14 @@ jobs:
           # (SRPMs are source packages and can be rebuilt for any distro)
           SRPM_DIR="rpm/SRPMS"
           mkdir -p "$SRPM_DIR"
-          for srpm in ../packages/srpm/*.rpm; do
-            cp "$srpm" "$SRPM_DIR/"
-            echo "Copied $srpm to $SRPM_DIR/"
-          done
+          if ls ../packages/srpm/*.rpm 1>/dev/null 2>&1; then
+            for srpm in ../packages/srpm/*.rpm; do
+              cp "$srpm" "$SRPM_DIR/"
+              echo "Copied $srpm to $SRPM_DIR/"
+            done
+          else
+            echo "No SRPM packages found to copy"
+          fi
 
           # Update repository metadata for each Fedora version
           for fc in 39 40 41 42; do
