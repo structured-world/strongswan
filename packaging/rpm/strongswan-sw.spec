@@ -77,12 +77,17 @@ Enables storing VPN user credentials and configuration in PostgreSQL.
 %package -n strongswan-dhcp-inform
 Summary:        DHCP INFORM responder plugin for strongSwan
 Requires:       strongswan-sw = %{version}-%{release}
-# dhcp-inform plugin stores/retrieves split-tunnel routes in PostgreSQL database
-Requires:       strongswan-pgsql = %{version}-%{release}
+# Database is optional - plugin can work with static routes or TS routes
+Recommends:     strongswan-pgsql = %{version}-%{release}
 
 %description -n strongswan-dhcp-inform
-Responds to Windows DHCPINFORM requests with split-tunnel routes
-from PostgreSQL database. Delivers routes via DHCP option 121/249.
+Responds to Windows DHCPINFORM requests with split-tunnel routes.
+Delivers routes via DHCP option 121/249.
+
+Route sources (in priority order):
+1. Traffic Selectors - EXCLUSIVE mode for Windows 7 compatibility
+2. Database (PostgreSQL/MySQL/SQLite) - if configured
+3. Static configuration from strongswan.conf
 
 %prep
 %autosetup -n strongswan-%{upstream_version}-sw.%{sw_rev}

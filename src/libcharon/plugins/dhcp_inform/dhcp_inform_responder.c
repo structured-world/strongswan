@@ -1,8 +1,13 @@
 /*
  * Copyright (C) 2025 Structured World Foundation
  *
- * DHCP Inform Responder - responds to Windows DHCPINFORM with routes from DB.
+ * DHCP Inform Responder - responds to Windows DHCPINFORM with routes.
  * Uses packet socket like forecast plugin to catch broadcast from VPN tunnels.
+ *
+ * Route sources (in priority order):
+ * 1. Traffic Selectors (EXCLUSIVE - when enabled, only TS routes are used)
+ * 2. Database (if configured and available)
+ * 3. Static configuration (from strongswan.conf)
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -11,12 +16,15 @@
  */
 
 #include "dhcp_inform_responder.h"
+#include "dhcp_inform_provider.h"
+#include "dhcp_inform_ts_provider.h"
+#include "dhcp_inform_db_provider.h"
+#include "dhcp_inform_static_provider.h"
 
 #include <daemon.h>
 #include <threading/thread.h>
 #include <processing/jobs/callback_job.h>
 #include <collections/linked_list.h>
-#include <database/database.h>
 
 #include <unistd.h>
 #include <errno.h>
@@ -104,9 +112,19 @@ struct private_dhcp_inform_responder_t {
 	dhcp_inform_responder_t public;
 
 	/**
-	 * Database connection
+	 * Traffic Selector route provider (EXCLUSIVE mode)
 	 */
-	database_t *db;
+	dhcp_inform_ts_provider_t *ts_provider;
+
+	/**
+	 * Database route provider (optional)
+	 */
+	dhcp_inform_db_provider_t *db_provider;
+
+	/**
+	 * Static route provider (from config)
+	 */
+	dhcp_inform_static_provider_t *static_provider;
 
 	/**
 	 * Packet socket for receiving broadcasts (AF_PACKET)
@@ -201,29 +219,99 @@ static traffic_selector_t *parse_cidr(const char *cidr)
 }
 
 /**
- * Get routes from database by client virtual IP.
- * Looks up routes for the pool that contains this IP.
+ * Check if traffic selector already exists in list (deduplication)
  */
-static linked_list_t *get_routes_by_ip(private_dhcp_inform_responder_t *this,
-									   const char *client_ip)
+static bool route_exists_in_list(linked_list_t *list, traffic_selector_t *ts)
+{
+	enumerator_t *enumerator;
+	traffic_selector_t *existing;
+	bool found = FALSE;
+
+	enumerator = list->create_enumerator(list);
+	while (enumerator->enumerate(enumerator, &existing))
+	{
+		if (ts->equals(ts, existing))
+		{
+			found = TRUE;
+			break;
+		}
+	}
+	enumerator->destroy(enumerator);
+
+	return found;
+}
+
+/**
+ * Add routes from provider to list with deduplication
+ */
+static void add_routes_from_provider(dhcp_inform_provider_t *provider,
+									 const char *client_ip,
+									 linked_list_t *routes)
+{
+	linked_list_t *provider_routes;
+	enumerator_t *enumerator;
+	traffic_selector_t *ts;
+	int added = 0;
+	int duplicates = 0;
+
+	if (!provider || !provider->is_available(provider))
+	{
+		return;
+	}
+
+	provider_routes = provider->get_routes(provider, client_ip);
+	if (!provider_routes)
+	{
+		return;
+	}
+
+	enumerator = provider_routes->create_enumerator(provider_routes);
+	while (enumerator->enumerate(enumerator, &ts))
+	{
+		if (route_exists_in_list(routes, ts))
+		{
+			duplicates++;
+			ts->destroy(ts);
+		}
+		else
+		{
+			routes->insert_last(routes, ts);
+			added++;
+		}
+	}
+	enumerator->destroy(enumerator);
+
+	/* Just destroy the list, not the routes (we moved ownership) */
+	provider_routes->destroy(provider_routes);
+
+	if (added > 0 || duplicates > 0)
+	{
+		DBG2(DBG_NET, "dhcp-inform: %s provider added %d routes (%d duplicates)",
+			 provider->get_name(provider), added, duplicates);
+	}
+}
+
+/**
+ * Get routes for client using available providers.
+ *
+ * THREE MUTUALLY EXCLUSIVE MODES (priority order):
+ * 1. TS routes - when use_ts_routes=yes, ONLY traffic selector routes
+ * 2. DB routes - when database configured, ONLY database routes
+ * 3. Static routes - when no DB, use config routes with per-pool overrides
+ *
+ * Modes are exclusive - they never combine.
+ */
+static linked_list_t *get_routes_for_client(private_dhcp_inform_responder_t *this,
+											const char *client_ip)
 {
 	linked_list_t *routes;
-	enumerator_t *enumerator;
-	char *route_value;
-	int routes_parsed = 0;
-	int routes_failed = 0;
+	dhcp_inform_provider_t *ts_prov, *db_prov, *static_prov;
 
 	routes = linked_list_create();
 	if (!routes)
 	{
 		DBG1(DBG_NET, "dhcp-inform: CRITICAL - failed to allocate routes list");
 		return NULL;
-	}
-
-	if (!this->db)
-	{
-		DBG1(DBG_NET, "dhcp-inform: no database connection");
-		return routes;
 	}
 
 	if (!client_ip || !*client_ip)
@@ -234,68 +322,45 @@ static linked_list_t *get_routes_by_ip(private_dhcp_inform_responder_t *this,
 
 	DBG1(DBG_NET, "dhcp-inform: looking up routes for IP %s", client_ip);
 
-	/* Query routes for the environment/pool that contains this IP
-	 * Uses v_pool_routes VIEW: (pool_cidr, route)
-	 * We check if client_ip falls within pool_cidr
-	 */
-	enumerator = this->db->query(this->db,
-		"SELECT route FROM v_pool_routes WHERE ?::inet << pool_cidr::inet",
-		DB_TEXT, client_ip,
-		DB_TEXT);
+	/* Get provider interfaces */
+	ts_prov = this->ts_provider ?
+			  &this->ts_provider->provider : NULL;
+	db_prov = this->db_provider ?
+			  &this->db_provider->provider : NULL;
+	static_prov = this->static_provider ?
+				  &this->static_provider->provider : NULL;
 
-	if (!enumerator)
+	/* MODE 1: TS routes (exclusive) */
+	if (ts_prov && ts_prov->is_available(ts_prov))
 	{
-		DBG1(DBG_NET, "dhcp-inform: primary query failed, trying fallback");
-		/* Fallback: get routes from auto_ip_pools directly */
-		enumerator = this->db->query(this->db,
-			"SELECT unnest(aip.routes) as route "
-			"FROM auto_ip_pools aip "
-			"JOIN environments e ON e.auto_ip_pool_id = aip.id "
-			"WHERE e.is_active = true "
-			"AND ?::inet << aip.cidr::inet",
-			DB_TEXT, client_ip,
-			DB_TEXT);
-	}
-
-	if (!enumerator)
-	{
-		DBG1(DBG_NET, "dhcp-inform: all queries failed for %s", client_ip);
+		DBG1(DBG_NET, "dhcp-inform: using TS routes mode (exclusive)");
+		add_routes_from_provider(ts_prov, client_ip, routes);
+		DBG1(DBG_NET, "dhcp-inform: found %d routes from TS for %s",
+			 routes->get_count(routes), client_ip);
 		return routes;
 	}
 
-	while (enumerator->enumerate(enumerator, &route_value))
+	/* MODE 2: Database routes (exclusive) */
+	if (db_prov && db_prov->is_available(db_prov))
 	{
-		routes_parsed++;
-
-		if (!route_value)
-		{
-			DBG1(DBG_NET, "dhcp-inform: CORRUPTED DATA - NULL route value at row %d", routes_parsed);
-			routes_failed++;
-			continue;
-		}
-
-		traffic_selector_t *ts = parse_cidr(route_value);
-		if (ts)
-		{
-			routes->insert_last(routes, ts);
-			DBG1(DBG_NET, "dhcp-inform: added route %s", route_value);
-		}
-		else
-		{
-			DBG1(DBG_NET, "dhcp-inform: CORRUPTED DATA - failed to parse route: %s", route_value);
-			routes_failed++;
-		}
-	}
-	enumerator->destroy(enumerator);
-
-	if (routes_failed > 0)
-	{
-		DBG1(DBG_NET, "dhcp-inform: WARNING - %d/%d routes had corrupted data",
-			 routes_failed, routes_parsed);
+		DBG1(DBG_NET, "dhcp-inform: using database routes mode (exclusive)");
+		add_routes_from_provider(db_prov, client_ip, routes);
+		DBG1(DBG_NET, "dhcp-inform: found %d routes from DB for %s",
+			 routes->get_count(routes), client_ip);
+		return routes;
 	}
 
-	DBG1(DBG_NET, "dhcp-inform: found %d valid routes for %s",
-		 routes->get_count(routes), client_ip);
+	/* MODE 3: Static routes with per-pool overrides (exclusive) */
+	if (static_prov && static_prov->is_available(static_prov))
+	{
+		DBG1(DBG_NET, "dhcp-inform: using static routes mode (exclusive)");
+		add_routes_from_provider(static_prov, client_ip, routes);
+		DBG1(DBG_NET, "dhcp-inform: found %d routes from config for %s",
+			 routes->get_count(routes), client_ip);
+		return routes;
+	}
+
+	DBG1(DBG_NET, "dhcp-inform: no route provider available for %s", client_ip);
 	return routes;
 }
 
@@ -715,8 +780,8 @@ static void process_dhcp_packet(private_dhcp_inform_responder_t *this,
 	inet_ntop(AF_INET, &dhcp->ciaddr, client_ip_str, sizeof(client_ip_str));
 	DBG1(DBG_NET, "dhcp-inform: received DHCPINFORM from %s", client_ip_str);
 
-	/* Get routes from database by client IP */
-	routes = get_routes_by_ip(this, client_ip_str);
+	/* Get routes from providers (TS exclusive, or DB + static combined) */
+	routes = get_routes_for_client(this, client_ip_str);
 
 	if (!routes)
 	{
@@ -846,7 +911,21 @@ METHOD(dhcp_inform_responder_t, destroy, void,
 	{
 		close(this->raw_fd);
 	}
-	DESTROY_IF(this->db);
+
+	/* Destroy providers */
+	if (this->ts_provider)
+	{
+		this->ts_provider->provider.destroy(&this->ts_provider->provider);
+	}
+	if (this->db_provider)
+	{
+		this->db_provider->provider.destroy(&this->db_provider->provider);
+	}
+	if (this->static_provider)
+	{
+		this->static_provider->provider.destroy(&this->static_provider->provider);
+	}
+
 	free(this->iface);
 	free(this);
 }
@@ -857,8 +936,9 @@ METHOD(dhcp_inform_responder_t, destroy, void,
 dhcp_inform_responder_t *dhcp_inform_responder_create()
 {
 	private_dhcp_inform_responder_t *this;
-	char *db_uri, *iface, *server_ip, *dns_server;
+	char *iface, *server_ip, *dns_server;
 	int on = 1;
+	bool has_routes = FALSE;
 
 	INIT(this,
 		.public = {
@@ -869,8 +949,6 @@ dhcp_inform_responder_t *dhcp_inform_responder_create()
 	);
 
 	/* Get configuration */
-	db_uri = lib->settings->get_str(lib->settings,
-		"%s.plugins.dhcp-inform.database", NULL, lib->ns);
 	iface = lib->settings->get_str(lib->settings,
 		"%s.plugins.dhcp-inform.interface", NULL, lib->ns);
 	server_ip = lib->settings->get_str(lib->settings,
@@ -878,18 +956,41 @@ dhcp_inform_responder_t *dhcp_inform_responder_create()
 	dns_server = lib->settings->get_str(lib->settings,
 		"%s.plugins.dhcp-inform.dns", NULL, lib->ns);
 
-	if (!db_uri || !server_ip)
+	if (!server_ip)
 	{
-		DBG1(DBG_NET, "dhcp-inform: missing database or server config");
+		DBG1(DBG_NET, "dhcp-inform: missing server config");
 		destroy(this);
 		return NULL;
 	}
 
-	/* Connect to database */
-	this->db = lib->db->create(lib->db, db_uri);
-	if (!this->db)
+	/* Initialize route providers */
+	this->ts_provider = dhcp_inform_ts_provider_create();
+	this->db_provider = dhcp_inform_db_provider_create();
+	this->static_provider = dhcp_inform_static_provider_create();
+
+	/* Check if any provider is available */
+	if (this->ts_provider &&
+		this->ts_provider->provider.is_available(&this->ts_provider->provider))
 	{
-		DBG1(DBG_NET, "dhcp-inform: failed to connect to database");
+		DBG1(DBG_NET, "dhcp-inform: TS provider enabled (EXCLUSIVE mode)");
+		has_routes = TRUE;
+	}
+	if (this->db_provider &&
+		this->db_provider->provider.is_available(&this->db_provider->provider))
+	{
+		DBG1(DBG_NET, "dhcp-inform: database provider enabled");
+		has_routes = TRUE;
+	}
+	if (this->static_provider &&
+		this->static_provider->provider.is_available(&this->static_provider->provider))
+	{
+		DBG1(DBG_NET, "dhcp-inform: static provider enabled");
+		has_routes = TRUE;
+	}
+
+	if (!has_routes)
+	{
+		DBG1(DBG_NET, "dhcp-inform: no route sources configured, plugin disabled");
 		destroy(this);
 		return NULL;
 	}
