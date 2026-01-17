@@ -1,6 +1,9 @@
 name: Build Packages
 
 on:
+  pull_request:
+    branches: [sw]
+    types: [closed]
   workflow_call:
     inputs:
       upstream_version:
@@ -16,15 +19,23 @@ on:
 
 jobs:
   prepare:
+    # Run only on merged PRs, workflow_call, or workflow_dispatch
+    if: github.event.pull_request.merged == true || github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
       rpm_version: ${{ steps.version.outputs.rpm_version }}
       upstream_version: ${{ steps.version.outputs.upstream_version }}
+      sw_rev: ${{ steps.version.outputs.sw_rev }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # For merged PR events, checkout the merge commit SHA to ensure it's visible
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.merged && github.event.pull_request.merge_commit_sha || 'sw' }}
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Determine version
         id: version
@@ -36,15 +47,41 @@ jobs:
             UPSTREAM_VERSION=$(grep -m1 'AC_INIT' configure.ac | sed -E 's/.*\[([0-9]+\.[0-9]+\.[0-9]+)\].*/\1/')
           fi
 
+          # Validate UPSTREAM_VERSION is not empty and matches expected format
+          if [[ ! "$UPSTREAM_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "ERROR: Invalid UPSTREAM_VERSION: '$UPSTREAM_VERSION'" >&2
+            exit 1
+          fi
+
+          # Count PR merges after upstream tag to determine SW revision number
+          # GitHub adds "(#N)" suffix on squash merge, so we count those
+          # This auto-increments: sw.1 -> sw.2 -> sw.3 on each PR merge to sw branch
+          # When upstream releases new version, we rebase and SW_REV resets to 1
+          # IMPORTANT: Repository MUST use squash merging for PRs to sw branch
+          # Manual commits or merge commits won't increment the version number
+          # Use git tag -l to check for tags only (git rev-parse would also match branches)
+          if git tag -l "${UPSTREAM_VERSION}" | grep -q .; then
+            # Tag exists - count squash merged PRs (commits with (#N) suffix)
+            # Note: This pattern matches GitHub's squash merge format; manual commits
+            # with similar suffixes are unlikely and would only inflate the version
+            SW_REV=$(git log "${UPSTREAM_VERSION}..HEAD" --oneline | grep -E -c '\(#[0-9]+\)$' || echo 0)
+            # Default to 1 if no PR merges found (minimum is sw.1)
+            [ "$SW_REV" -eq 0 ] && SW_REV=1
+          else
+            # No tag yet - use 1
+            SW_REV=1
+          fi
+
           # SW version for DEB: upstream-sw.N (dashes allowed)
-          VERSION="${UPSTREAM_VERSION}-sw.1"
+          VERSION="${UPSTREAM_VERSION}-sw.${SW_REV}"
           # SW version for RPM: upstream.sw.N (no dashes allowed in Version field)
-          RPM_VERSION="${UPSTREAM_VERSION}.sw.1"
+          RPM_VERSION="${UPSTREAM_VERSION}.sw.${SW_REV}"
 
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "rpm_version=$RPM_VERSION" >> $GITHUB_OUTPUT
           echo "upstream_version=$UPSTREAM_VERSION" >> $GITHUB_OUTPUT
-          echo "Building version: $VERSION / RPM: $RPM_VERSION (based on upstream $UPSTREAM_VERSION)"
+          echo "sw_rev=$SW_REV" >> $GITHUB_OUTPUT
+          echo "Building version: $VERSION / RPM: $RPM_VERSION (upstream $UPSTREAM_VERSION, SW revision $SW_REV)"
 
   build-deb:
     needs: prepare
@@ -96,6 +133,7 @@ jobs:
             libldap2-dev \
             libsqlite3-dev \
             libgcrypt20-dev \
+            libiptc-dev \
             gperf \
             flex \
             bison \
@@ -169,7 +207,7 @@ jobs:
           Replaces: strongswan, strongswan-charon, strongswan-starter
           Maintainer: Structured World Foundation <dev@sw.foundation>
           Homepage: https://github.com/structured-world/strongswan
-          Description: strongSwan IPsec (SW fork) - drop-in replacement
+          Description: strongSwan IPsec (SW fork)
            strongSwan is a complete IPsec implementation for Linux.
            This is the Structured World Foundation fork with socket permissions
            fix (umask 0660 for Unix sockets). Drop-in replacement for system
@@ -302,17 +340,23 @@ jobs:
             openldap-devel \
             sqlite-devel \
             libgcrypt-devel \
+            iptables-devel \
             gperf \
             flex \
             bison \
             rpm-build \
             rpmdevtools
 
-      - name: Build strongSwan
+      - name: Build RPM and SRPM packages
         env:
+          VERSION: ${{ needs.prepare.outputs.rpm_version }}
           UPSTREAM: ${{ needs.prepare.outputs.upstream_version }}
+          SW_REV: ${{ needs.prepare.outputs.sw_rev }}
         run: |
-          # Configure git safe directory first (required for newer git in containers)
+          # Configure git for container environment
+          # - safe.directory: required for newer git security checks
+          # - user.email/name: required if git init is needed
+          # - init.defaultBranch: avoid warnings on git init
           git config --global init.defaultBranch main
           git config --global user.email "build@sw.foundation"
           git config --global user.name "Build"
@@ -328,217 +372,62 @@ jobs:
           # Create git tag to satisfy strongSwan version check
           git tag -f "$UPSTREAM"
 
-          autoreconf -i
-          ./configure \
-            --prefix=/usr \
-            --sysconfdir=/etc \
-            --libdir=/usr/lib64 \
-            --libexecdir=/usr/lib64 \
-            --with-systemdsystemunitdir=/usr/lib/systemd/system \
-            --enable-eap-identity \
-            --enable-eap-mschapv2 \
-            --enable-eap-radius \
-            --enable-eap-tls \
-            --enable-xauth-eap \
-            --enable-vici \
-            --enable-swanctl \
-            --enable-sql \
-            --enable-pgsql \
-            --enable-sqlite \
-            --enable-systemd \
-            --enable-openssl \
-            --enable-curl \
-            --enable-ldap \
-            --enable-pam \
-            --enable-gcrypt \
-            --enable-farp \
-            --enable-dhcp \
-            --enable-dhcp-inform \
-            --enable-attr-sql \
-            --enable-forecast \
-            --disable-static
-
-          make -j$(nproc)
-
-      - name: Create RPM packages
-        run: |
-          VERSION="${{ needs.prepare.outputs.rpm_version }}"
-          UPSTREAM="${{ needs.prepare.outputs.upstream_version }}"
-          FEDORA="${{ matrix.fedora }}"
-
-          # Create main strongswan-sw RPM
-          MAIN_PKGDIR="strongswan-sw-${VERSION}"
-          mkdir -p "${MAIN_PKGDIR}"
-          make DESTDIR="$(pwd)/${MAIN_PKGDIR}" install
-
-          # Remove pgsql plugin from main package (will be in separate RPM)
-          PGSQL_SO=$(find "${MAIN_PKGDIR}" -name "libstrongswan-pgsql.so" -type f | head -1)
-          if [ -n "$PGSQL_SO" ]; then
-            PGSQL_SO_PATH=$(dirname "$PGSQL_SO" | sed "s|${MAIN_PKGDIR}||")
-            mkdir -p pgsql-plugin${PGSQL_SO_PATH}
-            mv "$PGSQL_SO" pgsql-plugin${PGSQL_SO_PATH}/
-          fi
-
-          # Remove dhcp-inform plugin from main package (will be in separate RPM)
-          DHCP_INFORM_SO=$(find "${MAIN_PKGDIR}" -name "libstrongswan-dhcp-inform.so" -type f | head -1)
-          if [ -n "$DHCP_INFORM_SO" ]; then
-            DHCP_INFORM_SO_PATH=$(dirname "$DHCP_INFORM_SO" | sed "s|${MAIN_PKGDIR}||")
-            mkdir -p dhcp-inform-plugin${DHCP_INFORM_SO_PATH}
-            mv "$DHCP_INFORM_SO" dhcp-inform-plugin${DHCP_INFORM_SO_PATH}/
-          fi
-
           # Setup rpmbuild structure
-          mkdir -p ~/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+          rpmdev-setuptree
 
-          # Create tarball for main package
-          tar czf ~/rpmbuild/SOURCES/strongswan-sw-${VERSION}.tar.gz "${MAIN_PKGDIR}"
-
-          # Main package spec
-          cat > ~/rpmbuild/SPECS/strongswan-sw.spec << 'SPEC_EOF'
-          %global debug_package %{nil}
-
-          Name:           strongswan-sw
-          Version:        %{pkg_version}
-          Release:        1.sw%{?dist}
-          Summary:        strongSwan IPsec (SW fork) - drop-in replacement
-
-          License:        GPLv2+
-          URL:            https://github.com/structured-world/strongswan
-          Source0:        strongswan-sw-%{pkg_version}.tar.gz
-
-          Requires:       gmp
-          Requires:       openssl-libs
-          Requires:       libcurl
-          Requires:       systemd-libs
-          Requires:       libcap
-          Requires:       pam
-          Requires:       openldap
-          Requires:       sqlite-libs
-          Requires:       libgcrypt
-
-          Provides:       strongswan = %{pkg_version}
-          Conflicts:      strongswan
-
-          %description
-          strongSwan is a complete IPsec implementation for Linux.
-          This is the Structured World Foundation fork with socket permissions
-          fix (umask 0660 for Unix sockets). Drop-in replacement for system
-          strongswan package.
-
-          %prep
-          %setup -q
-
-          %install
-          cp -a * %{buildroot}/
-
-          %files
-          /usr/*
-          /etc/*
-
-          %changelog
-          * %(date "+%a %b %d %Y") SW Foundation <dev@sw.foundation> - %{pkg_version}-1.sw
-          - strongSwan SW fork release
-          SPEC_EOF
-
-          rpmbuild -bb ~/rpmbuild/SPECS/strongswan-sw.spec \
-            --define "pkg_version ${VERSION}" \
-            --define "_topdir $HOME/rpmbuild"
-
-          # Create pgsql plugin tarball
-          tar czf ~/rpmbuild/SOURCES/strongswan-pgsql-${VERSION}.tar.gz pgsql-plugin
-
-          # PostgreSQL plugin package spec
-          cat > ~/rpmbuild/SPECS/strongswan-pgsql.spec << 'SPEC_EOF'
-          %global debug_package %{nil}
-
-          Name:           strongswan-pgsql
-          Version:        %{pkg_version}
-          Release:        1.sw%{?dist}
-          Summary:        PostgreSQL database plugin for strongSwan
-
-          License:        GPLv2+
-          URL:            https://github.com/structured-world/strongswan
-          Source0:        strongswan-pgsql-%{pkg_version}.tar.gz
-
-          Requires:       (strongswan >= 6.0 or strongswan-sw)
-          Requires:       libpq
-
-          %description
-          PostgreSQL database backend for strongSwan SQL plugin.
-          Enables storing VPN user credentials and configuration in PostgreSQL.
-          Works with system strongswan (>= 6.0) or strongswan-sw.
-
-          %prep
-          %setup -q -n pgsql-plugin
-
-          %install
-          cp -a * %{buildroot}/
-
-          %files
-          /usr/lib64/ipsec/plugins/libstrongswan-pgsql.so
-
-          %changelog
-          * %(date "+%a %b %d %Y") SW Foundation <dev@sw.foundation> - %{pkg_version}-1.sw
-          - PostgreSQL database plugin for strongSwan
-          SPEC_EOF
-
-          rpmbuild -bb ~/rpmbuild/SPECS/strongswan-pgsql.spec \
-            --define "pkg_version ${VERSION}" \
-            --define "_topdir $HOME/rpmbuild"
-
-          # DHCP-Inform plugin package
-          if [ -d "dhcp-inform-plugin" ]; then
-            tar czf ~/rpmbuild/SOURCES/strongswan-dhcp-inform-${VERSION}.tar.gz dhcp-inform-plugin
-
-            cat > ~/rpmbuild/SPECS/strongswan-dhcp-inform.spec << 'SPEC_EOF'
-            %global debug_package %{nil}
-
-            Name:           strongswan-dhcp-inform
-            Version:        %{pkg_version}
-            Release:        1.sw%{?dist}
-            Summary:        DHCP INFORM responder plugin for strongSwan
-
-            License:        GPLv2+
-            URL:            https://github.com/structured-world/strongswan
-            Source0:        strongswan-dhcp-inform-%{pkg_version}.tar.gz
-
-            Requires:       (strongswan >= 6.0 or strongswan-sw)
-            Requires:       strongswan-pgsql
-
-            %description
-            Responds to Windows DHCPINFORM requests with split-tunnel routes
-            from PostgreSQL database. Delivers routes via DHCP option 121/249.
-            Works with system strongswan (>= 6.0) or strongswan-sw.
-
-            %prep
-            %setup -q -n dhcp-inform-plugin
-
-            %install
-            cp -a * %{buildroot}/
-
-            %files
-            /usr/lib64/ipsec/plugins/libstrongswan-dhcp-inform.so
-
-            %changelog
-            * %(date "+%a %b %d %Y") SW Foundation <dev@sw.foundation> - %{pkg_version}-1.sw
-            - DHCP INFORM responder plugin for strongSwan
-            SPEC_EOF
-
-            rpmbuild -bb ~/rpmbuild/SPECS/strongswan-dhcp-inform.spec \
-              --define "pkg_version ${VERSION}" \
-              --define "_topdir $HOME/rpmbuild"
+          # Create source tarball from git
+          # NOTE: This naming must match packaging/rpm/strongswan-sw.spec Source0 and %autosetup
+          SOURCE_NAME="strongswan-${UPSTREAM}-sw.${SW_REV}"
+          if ! git archive --format=tar.gz --prefix="${SOURCE_NAME}/" HEAD > ~/rpmbuild/SOURCES/${SOURCE_NAME}.tar.gz; then
+            echo "ERROR: Failed to create source tarball" >&2
+            exit 1
           fi
 
-          # Copy RPMs to workspace
-          mkdir -p rpms
-          cp ~/rpmbuild/RPMS/*/*.rpm rpms/
-          ls -la rpms/
+          # Copy spec file from repository
+          cp packaging/rpm/strongswan-sw.spec ~/rpmbuild/SPECS/
 
-      - name: Upload artifacts
+          # Build binary RPMs, SRPMs, and debuginfo packages
+          rpmbuild -ba ~/rpmbuild/SPECS/strongswan-sw.spec \
+            --define "upstream_version ${UPSTREAM}" \
+            --define "sw_rev ${SW_REV}" \
+            --define "_topdir $HOME/rpmbuild"
+
+          # Copy all packages to workspace
+          mkdir -p rpms srpms
+          cp ~/rpmbuild/RPMS/*/*.rpm rpms/ 2>/dev/null || true
+          cp ~/rpmbuild/SRPMS/*.rpm srpms/ 2>/dev/null || true
+
+          # Verify that packages were actually built
+          if ! ls rpms/*.rpm 1>/dev/null 2>&1; then
+            echo "ERROR: No RPM packages were built" >&2
+            exit 1
+          fi
+          if ! ls srpms/*.rpm 1>/dev/null 2>&1; then
+            echo "ERROR: No SRPM packages were built" >&2
+            exit 1
+          fi
+
+          echo "=== Binary RPMs ==="
+          ls -la rpms/
+          echo "=== Source RPMs ==="
+          ls -la srpms/
+
+      - name: Upload RPM artifacts
         uses: actions/upload-artifact@v4
         with:
           name: rpm-fc${{ matrix.fedora }}
           path: "rpms/*.rpm"
+          retention-days: 7
+
+      # Upload SRPM only from fc42 job to avoid duplicates (SRPMs are identical across distros)
+      # If fc42 build fails, SRPMs won't be uploaded - this is acceptable as binary
+      # RPMs are the primary deliverable and SRPMs can be regenerated from git
+      - name: Upload SRPM artifacts
+        if: matrix.fedora == 42
+        uses: actions/upload-artifact@v4
+        with:
+          name: srpm
+          path: "srpms/*.rpm"
           retention-days: 7
 
   publish:
@@ -560,12 +449,23 @@ jobs:
           pattern: rpm-*
           merge-multiple: true
 
+      - name: Download SRPM artifact
+        # continue-on-error: SRPM is only uploaded from fc42; if that build fails, skip SRPM
+        continue-on-error: true
+        id: download-srpm
+        uses: actions/download-artifact@v4
+        with:
+          path: packages/srpm
+          name: srpm
+
       - name: List packages
         run: |
           echo "=== DEB packages ==="
           ls -la packages/deb/
           echo "=== RPM packages ==="
           ls -la packages/rpm/
+          echo "=== SRPM packages ==="
+          ls -la packages/srpm/ 2>/dev/null || echo "No SRPM packages (fc42 build may have failed)"
 
       - name: Clone repository
         uses: actions/checkout@v4
@@ -671,7 +571,7 @@ jobs:
           # Copy RPM packages to appropriate Fedora directories
           for rpm in ../packages/rpm/*.rpm; do
             FILENAME=$(basename "$rpm")
-            # Extract fc version from filename (e.g., strongswan-sw-6.0.4-sw.1-1.sw.fc40.x86_64.rpm)
+            # Extract fc version from filename (e.g., strongswan-sw-6.0.4.sw.2-1.fc40.x86_64.rpm)
             if [[ "$FILENAME" =~ \.fc([0-9]+)\. ]]; then
               FC_VER="${BASH_REMATCH[1]}"
               DEST_DIR="rpm/fc${FC_VER}"
@@ -680,6 +580,25 @@ jobs:
               echo "Copied $rpm to $DEST_DIR/"
             fi
           done
+
+          # Copy SRPM packages to a single distro-agnostic directory
+          # (SRPMs are source packages and can be rebuilt for any distro)
+          SRPM_DIR="rpm/SRPMS"
+          mkdir -p "$SRPM_DIR"
+          if ls ../packages/srpm/*.rpm 1>/dev/null 2>&1; then
+            for srpm in ../packages/srpm/*.rpm; do
+              cp "$srpm" "$SRPM_DIR/"
+              echo "Copied $srpm to $SRPM_DIR/"
+            done
+
+            # Create SRPM repository metadata
+            createrepo_c --update "$SRPM_DIR"
+            gpg_sign --armor --detach-sign -o "${SRPM_DIR}/repodata/repomd.xml.asc" \
+              "${SRPM_DIR}/repodata/repomd.xml"
+            echo "Updated SRPM repository"
+          else
+            echo "No SRPM packages found to copy"
+          fi
 
           # Update repository metadata for each Fedora version
           for fc in 39 40 41 42; do
