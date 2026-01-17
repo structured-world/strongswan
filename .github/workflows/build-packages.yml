@@ -119,6 +119,7 @@ jobs:
             libldap2-dev \
             libsqlite3-dev \
             libgcrypt20-dev \
+            libiptc-dev \
             gperf \
             flex \
             bison \
@@ -325,6 +326,7 @@ jobs:
             openldap-devel \
             sqlite-devel \
             libgcrypt-devel \
+            iptables-devel \
             gperf \
             flex \
             bison \
