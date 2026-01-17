@@ -661,38 +661,17 @@ jobs:
           cat > release-notes.md << 'EOF'
           ## strongSwan SW {{VERSION}}
 
-          This release is based on upstream strongSwan {{UPSTREAM}} with SW fork modifications.
+          Based on upstream strongSwan {{UPSTREAM}} with the following SW fork modifications:
+
+          ### Changes
+
+          - **PostgreSQL database plugin** - SQL-based authentication and authorization
+          - **Unix socket permissions fix** - Proper umask (0660) for VICI socket
+          - **DHCP-inform plugin** - Windows split-tunnel routes via DHCP option 121/249
 
           ### Installation
 
-          Packages are available from the [repo](https://github.com/structured-world/repo).
-
-          **Fedora/RHEL:**
-          ```bash
-          # Add repository (one-time setup)
-          sudo dnf config-manager --add-repo https://structured-world.github.io/repo/rpm/fc\$releasever/strongswan-sw.repo
-
-          # Install
-          sudo dnf install strongswan-sw
-          ```
-
-          **Ubuntu/Debian:**
-          ```bash
-          # Add repository (one-time setup)
-          curl -fsSL https://structured-world.github.io/repo/deb/gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/strongswan-sw.gpg
-          echo "deb [signed-by=/usr/share/keyrings/strongswan-sw.gpg] https://structured-world.github.io/repo/deb $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/strongswan-sw.list
-
-          # Install
-          sudo apt update && sudo apt install strongswan-sw
-          ```
-
-          ### SW Fork Changes
-
-          - PostgreSQL database plugin for SQL authentication
-          - Unix socket permissions fix (umask 0660)
-          - DHCP-inform plugin for Windows split-tunnel routes
-
-          For full changelog, see the [sw branch](https://github.com/structured-world/strongswan/tree/sw).
+          See the [website](https://structured-world.github.io/strongswan/) for installation instructions.
           EOF
 
           # Substitute placeholders in release notes
