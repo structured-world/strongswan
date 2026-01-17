@@ -34,8 +34,9 @@ struct dhcp_inform_provider_t {
 	 *
 	 * @param this			provider instance
 	 * @param client_ip		client's virtual IP address string
-	 * @return				linked_list_t of traffic_selector_t (caller destroys),
-	 *						or NULL on error
+	 * @return				linked_list_t of traffic_selector_t (caller destroys).
+	 *						Returns valid list (possibly empty) on success.
+	 *						NULL indicates allocation failure; callers must handle.
 	 */
 	linked_list_t* (*get_routes)(dhcp_inform_provider_t *this,
 								 const char *client_ip);

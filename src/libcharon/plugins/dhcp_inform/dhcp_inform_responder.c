@@ -240,13 +240,13 @@ static void add_routes_from_provider(dhcp_inform_provider_t *provider,
 /**
  * Get routes for client using available providers.
  *
- * THREE MUTUALLY EXCLUSIVE MODES (priority order):
- * 1. TS routes - when use_ts_routes=yes, ONLY traffic selector routes
- * 2. DB routes - when database configured, ONLY database routes
- * 3. Static routes - when no DB, use config routes with per-pool overrides
+ * PRIORITY-BASED ROUTE SELECTION (first available wins):
+ * 1. TS routes - when use_ts_routes=yes, traffic selectors from IKE SA
+ * 2. DB routes - when database configured, routes from SQL database
+ * 3. Static routes - fallback to config routes with per-pool overrides
  *
- * Modes are exclusive - if multiple are configured, highest priority wins.
- * This is intentional: config errors don't crash, just use first available mode.
+ * Only ONE source is used per request. Multiple sources can be configured
+ * for graceful fallback - highest-priority available source is selected.
  */
 static linked_list_t *get_routes_for_client(private_dhcp_inform_responder_t *this,
 											const char *client_ip)

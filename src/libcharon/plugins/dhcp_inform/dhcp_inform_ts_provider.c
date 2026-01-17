@@ -204,12 +204,21 @@ static linked_list_t *extract_ts_from_ike_sa(const char *client_ip)
 METHOD(dhcp_inform_provider_t, get_routes, linked_list_t*,
 	private_dhcp_inform_ts_provider_t *this, const char *client_ip)
 {
+	linked_list_t *routes;
+
 	if (!this->enabled)
 	{
+		/* Provider disabled - return empty list (may be NULL on OOM) */
 		return linked_list_create();
 	}
 
-	return extract_ts_from_ike_sa(client_ip);
+	routes = extract_ts_from_ike_sa(client_ip);
+	if (!routes)
+	{
+		/* Allocation failed - return empty list as fallback (may be NULL on OOM) */
+		return linked_list_create();
+	}
+	return routes;
 }
 
 METHOD(dhcp_inform_provider_t, get_name, const char*,
