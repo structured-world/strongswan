@@ -8,11 +8,11 @@
  */
 
 /**
- * @defgroup dhcp_inform_p dhcp_inform
+ * @defgroup dhcp_inform dhcp_inform
  * @ingroup cplugins
  *
  * @defgroup dhcp_inform_plugin dhcp_inform_plugin
- * @{ @ingroup dhcp_inform_p
+ * @{ @ingroup dhcp_inform
  */
 
 #ifndef DHCP_INFORM_PLUGIN_H_
@@ -23,16 +23,17 @@
 typedef struct dhcp_inform_plugin_t dhcp_inform_plugin_t;
 
 /**
- * Plugin responding to DHCPINFORM with routes from PostgreSQL database.
+ * Plugin responding to DHCPINFORM with split-tunnel routes.
  *
  * Windows VPN clients send DHCPINFORM after IKEv2 connection to get
- * split-tunnel routes via DHCP option 249 (Microsoft Classless Static Routes).
+ * split-tunnel routes via DHCP option 121/249.
  *
- * This plugin:
- * - Listens for DHCPINFORM on the VPN interface
- * - Looks up routes by matching client's virtual IP to network pool CIDR
- * - Queries PostgreSQL for routes configured in the pool's environment
- * - Responds with DHCPACK containing option 121/249 with routes
+ * Route sources (in priority order):
+ * 1. Traffic Selectors - EXCLUSIVE mode (for Windows 7 compatibility)
+ * 2. Database (PostgreSQL/MySQL/SQLite) - if configured
+ * 3. Static configuration from strongswan.conf
+ *
+ * The plugin works WITHOUT any database when using static or TS routes.
  */
 struct dhcp_inform_plugin_t {
 

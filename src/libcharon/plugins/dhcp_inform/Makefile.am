@@ -13,6 +13,10 @@ endif
 
 libstrongswan_dhcp_inform_la_SOURCES = \
 	dhcp_inform_plugin.h dhcp_inform_plugin.c \
-	dhcp_inform_responder.h dhcp_inform_responder.c
+	dhcp_inform_responder.h dhcp_inform_responder.c \
+	dhcp_inform_provider.h \
+	dhcp_inform_static_provider.h dhcp_inform_static_provider.c \
+	dhcp_inform_ts_provider.h dhcp_inform_ts_provider.c \
+	dhcp_inform_db_provider.h dhcp_inform_db_provider.c
 
 libstrongswan_dhcp_inform_la_LDFLAGS = -module -avoid-version
