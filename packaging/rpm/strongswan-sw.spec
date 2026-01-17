@@ -109,6 +109,7 @@ autoreconf -fiv
     --enable-dhcp-inform \
     --enable-attr-sql \
     --enable-forecast \
+    --enable-pam \
     --with-capabilities=libcap
 
 %make_build

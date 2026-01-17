@@ -20,7 +20,7 @@ on:
 jobs:
   prepare:
     # Run only on merged PRs, workflow_call, or workflow_dispatch
-    if: github.event.pull_request.merged == true || github.event_name != 'pull_request'
+    if: github.event.pull_request.merged || github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -32,8 +32,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          # For PR merge events, checkout the target branch to get accurate commit count
-          ref: ${{ github.event.pull_request.base.ref || 'sw' }}
+          # For merged PR events, checkout the merge commit SHA to ensure it's visible
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.merged && github.event.pull_request.merge_commit_sha || 'sw' }}
           fetch-depth: 0
           fetch-tags: true
 
@@ -53,7 +53,7 @@ jobs:
           # When upstream releases new version, we rebase and SW_REV resets to 1
           if git rev-parse "${UPSTREAM_VERSION}" >/dev/null 2>&1; then
             # Tag exists - count squash merged PRs (commits with (#N) suffix)
-            SW_REV=$(git log "${UPSTREAM_VERSION}..HEAD" --oneline | grep -c '(#[0-9]\+)$' || echo 0)
+            SW_REV=$(git log "${UPSTREAM_VERSION}..HEAD" --oneline | grep -E -c '\(#[0-9]+\)$' || echo 0)
             # Default to 1 if no PR merges found (minimum is sw.1)
             [ "$SW_REV" -eq 0 ] && SW_REV=1
           else
@@ -547,17 +547,13 @@ jobs:
             fi
           done
 
-          # Copy SRPM packages to appropriate Fedora directories
+          # Copy SRPM packages to a single distro-agnostic directory
+          # (SRPMs are source packages and can be rebuilt for any distro)
+          SRPM_DIR="rpm/SRPMS"
+          mkdir -p "$SRPM_DIR"
           for srpm in ../packages/srpm/*.rpm; do
-            FILENAME=$(basename "$srpm")
-            # Extract fc version from filename
-            if [[ "$FILENAME" =~ \.fc([0-9]+)\. ]]; then
-              FC_VER="${BASH_REMATCH[1]}"
-              DEST_DIR="rpm/fc${FC_VER}/SRPMS"
-              mkdir -p "$DEST_DIR"
-              cp "$srpm" "$DEST_DIR/"
-              echo "Copied $srpm to $DEST_DIR/"
-            fi
+            cp "$srpm" "$SRPM_DIR/"
+            echo "Copied $srpm to $SRPM_DIR/"
           done
 
           # Update repository metadata for each Fedora version
