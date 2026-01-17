@@ -334,7 +334,9 @@ jobs:
             openssl-devel \
             libcurl-devel \
             libpq-devel \
+            systemd \
             systemd-devel \
+            systemd-rpm-macros \
             libcap-devel \
             pam-devel \
             openldap-devel \
@@ -346,6 +348,11 @@ jobs:
             bison \
             rpm-build \
             rpmdevtools
+
+          # Fedora 41+ moved deprecated OpenSSL ENGINE API to separate package
+          if [ "${{ matrix.fedora }}" -ge 41 ]; then
+            dnf install -y openssl-devel-engine
+          fi
 
       - name: Build RPM and SRPM packages
         env:
