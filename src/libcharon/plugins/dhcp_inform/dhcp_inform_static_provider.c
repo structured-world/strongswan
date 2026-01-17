@@ -369,7 +369,7 @@ static linked_list_t *clone_routes(linked_list_t *source)
 {
 	linked_list_t *cloned;
 	enumerator_t *enumerator;
-	traffic_selector_t *ts;
+	traffic_selector_t *ts, *clone;
 
 	cloned = linked_list_create();
 	if (!cloned)
@@ -379,7 +379,13 @@ static linked_list_t *clone_routes(linked_list_t *source)
 	enumerator = source->create_enumerator(source);
 	while (enumerator->enumerate(enumerator, &ts))
 	{
-		cloned->insert_last(cloned, ts->clone(ts));
+		clone = ts->clone(ts);
+		if (!clone)
+		{
+			DBG1(DBG_CFG, "dhcp-inform: failed to clone traffic selector");
+			continue;
+		}
+		cloned->insert_last(cloned, clone);
 	}
 	enumerator->destroy(enumerator);
 
@@ -490,6 +496,13 @@ dhcp_inform_static_provider_t *dhcp_inform_static_provider_create()
 		.pools = linked_list_create(),
 		.has_routes = FALSE,
 	);
+
+	if (!this->pools)
+	{
+		DBG1(DBG_CFG, "dhcp-inform: failed to create pools list");
+		free(this);
+		return NULL;
+	}
 
 	/* Load global routes */
 	this->global_routes = load_routes_from_section("routes");

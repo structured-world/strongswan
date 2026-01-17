@@ -162,9 +162,17 @@ static linked_list_t *extract_ts_from_ike_sa(const char *client_ip)
 			ts_enum = child_sa->create_ts_enumerator(child_sa, FALSE);
 			while (ts_enum->enumerate(ts_enum, &ts))
 			{
+				traffic_selector_t *clone;
+
 				if (is_valid_route_ts(ts) && !ts_exists_in_list(routes, ts))
 				{
-					routes->insert_last(routes, ts->clone(ts));
+					clone = ts->clone(ts);
+					if (!clone)
+					{
+						DBG1(DBG_CFG, "dhcp-inform-ts: failed to clone TS");
+						continue;
+					}
+					routes->insert_last(routes, clone);
 					route_count++;
 					DBG2(DBG_CFG, "dhcp-inform-ts: extracted route %R", ts);
 				}

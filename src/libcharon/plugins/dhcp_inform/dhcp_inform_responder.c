@@ -209,6 +209,11 @@ static void add_routes_from_provider(dhcp_inform_provider_t *provider,
 	enumerator = provider_routes->create_enumerator(provider_routes);
 	while (enumerator->enumerate(enumerator, &ts))
 	{
+		if (!ts)
+		{
+			/* Skip NULL entries that may result from failed clone operations */
+			continue;
+		}
 		if (route_exists_in_list(routes, ts))
 		{
 			duplicates++;
