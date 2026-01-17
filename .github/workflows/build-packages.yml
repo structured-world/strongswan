@@ -406,10 +406,12 @@ jobs:
           path: "rpms/*.rpm"
           retention-days: 7
 
+      # Upload SRPM only from fc42 job to avoid duplicates (SRPMs are identical across distros)
       - name: Upload SRPM artifacts
+        if: matrix.fedora == 42
         uses: actions/upload-artifact@v4
         with:
-          name: srpm-fc${{ matrix.fedora }}
+          name: srpm
           path: "srpms/*.rpm"
           retention-days: 7
 
@@ -432,12 +434,11 @@ jobs:
           pattern: rpm-*
           merge-multiple: true
 
-      - name: Download all SRPM artifacts
+      - name: Download SRPM artifact
         uses: actions/download-artifact@v4
         with:
           path: packages/srpm
-          pattern: srpm-*
-          merge-multiple: true
+          name: srpm
 
       - name: List packages
         run: |

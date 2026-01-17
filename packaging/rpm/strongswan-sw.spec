@@ -2,16 +2,15 @@
 # Based on Fedora strongswan.spec with modifications for SW Foundation
 
 %global _hardened_build 1
-%global sw_suffix sw
 
 Name:           strongswan-sw
-Version:        %{upstream_version}.%{sw_suffix}.%{sw_rev}
+Version:        %{upstream_version}.sw.%{sw_rev}
 Release:        1%{?dist}
 Summary:        strongSwan IPsec (SW fork)
 
 License:        GPL-2.0-or-later
 URL:            https://github.com/structured-world/strongswan
-Source0:        strongswan-%{upstream_version}-%{sw_suffix}.%{sw_rev}.tar.gz
+Source0:        strongswan-%{upstream_version}-sw.%{sw_rev}.tar.gz
 
 BuildRequires:  autoconf
 BuildRequires:  automake
@@ -81,7 +80,7 @@ Responds to Windows DHCPINFORM requests with split-tunnel routes
 from PostgreSQL database. Delivers routes via DHCP option 121/249.
 
 %prep
-%autosetup -n strongswan-%{upstream_version}-%{sw_suffix}.%{sw_rev}
+%autosetup -n strongswan-%{upstream_version}-sw.%{sw_rev}
 
 %build
 autoreconf -fiv
@@ -133,10 +132,17 @@ done
 %license COPYING
 %doc README NEWS
 %dir %{_sysconfdir}/strongswan
-%config(noreplace) %{_sysconfdir}/strongswan/*
-%{_unitdir}/strongswan*.service
+%dir %{_sysconfdir}/strongswan/ipsec.d
+%dir %{_sysconfdir}/strongswan/swanctl
+%config(noreplace) %{_sysconfdir}/strongswan/*.conf
+%config(noreplace) %{_sysconfdir}/strongswan/strongswan.d
+%{_sysconfdir}/strongswan/ipsec.d/*
+%{_sysconfdir}/strongswan/swanctl/*
+%{_unitdir}/strongswan.service
+%{_unitdir}/strongswan-swanctl.service
 %{_sbindir}/*
-%{_libdir}/ipsec
+%dir %{_libdir}/ipsec
+%{_libdir}/ipsec/*
 %exclude %{_libdir}/ipsec/plugins/libstrongswan-pgsql.so
 %exclude %{_libdir}/ipsec/plugins/libstrongswan-dhcp-inform.so
 %{_datadir}/strongswan
@@ -149,13 +155,13 @@ done
 %{_libdir}/ipsec/plugins/libstrongswan-dhcp-inform.so
 
 %post
-%systemd_post strongswan.service
+%systemd_post strongswan.service strongswan-swanctl.service
 
 %preun
-%systemd_preun strongswan.service
+%systemd_preun strongswan.service strongswan-swanctl.service
 
 %postun
-%systemd_postun_with_restart strongswan.service
+%systemd_postun_with_restart strongswan.service strongswan-swanctl.service
 
 %changelog
 * %(date "+%a %b %d %Y") SW Foundation <dev@sw.foundation> - %{version}-%{release}
