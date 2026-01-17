@@ -74,7 +74,9 @@ static void pool_entry_destroy(pool_entry_t *entry)
 	}
 }
 
-/* Maximum CIDR string length: "xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx/128" = 43 chars */
+/* Maximum CIDR string length for IPv4: "255.255.255.255/32" = 18 chars.
+ * Note: DHCP option 121/249 (classless static routes) is IPv4-only.
+ * Using 43 to be safe with any reasonable input. */
 #define MAX_CIDR_LEN 43
 
 /**
@@ -310,8 +312,9 @@ static void load_pools(private_dhcp_inform_static_provider_t *this)
 			.prefix = prefix,
 		);
 
-		if (snprintf(routes_section, sizeof(routes_section),
-				 "pools.%s.routes", pool_name) >= (int)sizeof(routes_section))
+		int len = snprintf(routes_section, sizeof(routes_section),
+						   "pools.%s.routes", pool_name);
+		if (len < 0 || len >= (int)sizeof(routes_section))
 		{
 			DBG1(DBG_CFG, "dhcp-inform: pool name '%s' too long, skipping",
 				 pool_name);

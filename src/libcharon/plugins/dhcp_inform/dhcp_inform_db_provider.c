@@ -33,7 +33,9 @@ struct private_dhcp_inform_db_provider_t {
 	database_t *db;
 };
 
-/* Maximum CIDR string length: "xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx/128" = 43 chars */
+/* Maximum CIDR string length for IPv4: "255.255.255.255/32" = 18 chars.
+ * Note: DHCP option 121/249 (classless static routes) is IPv4-only.
+ * Using 43 to be safe with any reasonable input. */
 #define MAX_CIDR_LEN 43
 
 /**

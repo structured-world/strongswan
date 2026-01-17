@@ -722,7 +722,7 @@ static void process_dhcp_packet(private_dhcp_inform_responder_t *this,
 	inet_ntop(AF_INET, &dhcp->ciaddr, client_ip_str, sizeof(client_ip_str));
 	DBG1(DBG_NET, "dhcp-inform: received DHCPINFORM from %s", client_ip_str);
 
-	/* Get routes from providers (TS exclusive, or DB + static combined) */
+	/* Get routes from providers (mutually exclusive: TS OR DB OR static) */
 	routes = get_routes_for_client(this, client_ip_str);
 
 	if (!routes)
