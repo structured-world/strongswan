@@ -35,6 +35,9 @@ BuildRequires:  libgcrypt-devel
 BuildRequires:  iptables-devel
 BuildRequires:  libcap-devel
 BuildRequires:  libpq-devel
+BuildRequires:  gperf
+BuildRequires:  flex
+BuildRequires:  bison
 
 Requires:       gmp
 Requires:       openssl-libs

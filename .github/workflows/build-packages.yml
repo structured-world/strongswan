@@ -57,6 +57,8 @@ jobs:
           # GitHub adds "(#N)" suffix on squash merge, so we count those
           # This auto-increments: sw.1 -> sw.2 -> sw.3 on each PR merge to sw branch
           # When upstream releases new version, we rebase and SW_REV resets to 1
+          # IMPORTANT: Repository MUST use squash merging for PRs to sw branch
+          # Manual commits or merge commits won't increment the version number
           if git rev-parse "${UPSTREAM_VERSION}" >/dev/null 2>&1; then
             # Tag exists - count squash merged PRs (commits with (#N) suffix)
             SW_REV=$(git log "${UPSTREAM_VERSION}..HEAD" --oneline | grep -E -c '\(#[0-9]+\)$' || echo 0)
@@ -386,6 +388,12 @@ jobs:
           cp ~/rpmbuild/RPMS/*/*.rpm rpms/ 2>/dev/null || true
           cp ~/rpmbuild/SRPMS/*.rpm srpms/ 2>/dev/null || true
 
+          # Verify that packages were actually built
+          if ! ls rpms/*.rpm 1>/dev/null 2>&1; then
+            echo "ERROR: No RPM packages were built" >&2
+            exit 1
+          fi
+
           echo "=== Binary RPMs ==="
           ls -la rpms/
           echo "=== Source RPMs ==="
@@ -563,6 +571,12 @@ jobs:
               cp "$srpm" "$SRPM_DIR/"
               echo "Copied $srpm to $SRPM_DIR/"
             done
+
+            # Create SRPM repository metadata
+            createrepo_c --update "$SRPM_DIR"
+            gpg_sign --armor --detach-sign -o "${SRPM_DIR}/repodata/repomd.xml.asc" \
+              "${SRPM_DIR}/repodata/repomd.xml"
+            echo "Updated SRPM repository"
           else
             echo "No SRPM packages found to copy"
           fi
