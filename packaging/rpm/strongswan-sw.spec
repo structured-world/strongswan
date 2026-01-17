@@ -179,7 +179,8 @@ done
 %{_libdir}/ipsec/charon
 %{_libdir}/ipsec/pool
 %{_libdir}/ipsec/xfrmi
-# Libraries
+# Libraries - explicit versions preferred over wildcards for traceability.
+# If upstream changes library versions, build failure alerts us to review.
 %dir %{_libdir}/ipsec
 %dir %{_libdir}/ipsec/plugins
 %{_libdir}/ipsec/libcharon.so
