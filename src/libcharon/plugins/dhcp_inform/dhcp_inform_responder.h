@@ -9,7 +9,7 @@
 
 /**
  * @defgroup dhcp_inform_responder dhcp_inform_responder
- * @{ @ingroup dhcp_inform_p
+ * @{ @ingroup dhcp_inform
  */
 
 #ifndef DHCP_INFORM_RESPONDER_H_
@@ -18,7 +18,7 @@
 typedef struct dhcp_inform_responder_t dhcp_inform_responder_t;
 
 /**
- * DHCPINFORM responder that sends routes from database.
+ * DHCPINFORM responder that sends routes via DHCP option 121/249.
  */
 struct dhcp_inform_responder_t {
 

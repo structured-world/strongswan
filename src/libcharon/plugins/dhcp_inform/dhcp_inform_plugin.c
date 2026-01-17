@@ -7,6 +7,18 @@
  * option) any later version.
  */
 
+/**
+ * DHCP INFORM Plugin - responds to Windows DHCPINFORM with routes.
+ *
+ * Route sources (in priority order):
+ * 1. Traffic Selectors (EXCLUSIVE mode - when enabled, only TS routes used)
+ * 2. Database (PostgreSQL/MySQL/SQLite - optional)
+ * 3. Static configuration (from strongswan.conf)
+ *
+ * The plugin works WITHOUT any database if static routes or TS routes are
+ * configured. Database plugins are soft dependencies.
+ */
+
 #include "dhcp_inform_plugin.h"
 #include "dhcp_inform_responder.h"
 
@@ -65,8 +77,9 @@ METHOD(plugin_t, get_features, int,
 	static plugin_feature_t f[] = {
 		PLUGIN_CALLBACK((plugin_feature_callback_t)plugin_cb, NULL),
 			PLUGIN_PROVIDE(CUSTOM, "dhcp-inform"),
-				PLUGIN_DEPENDS(DATABASE, DB_PGSQL),
-				PLUGIN_SDEPEND(CUSTOM, "attr-sql"),
+				/* Database plugins are optional - plugin works with static
+				 * routes or TS routes without any database */
+				PLUGIN_SDEPEND(DATABASE, DB_ANY),
 	};
 	*features = f;
 	return countof(f);
