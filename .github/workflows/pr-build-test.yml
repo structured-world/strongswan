@@ -101,13 +101,11 @@ jobs:
 
       - name: Setup git for tarball creation
         run: |
+          # Configure git for tarball creation (actions/checkout@v4 handles .git)
           git config --global init.defaultBranch main
           git config --global user.email "test@example.com"
           git config --global user.name "Test"
           git config --global --add safe.directory "$(pwd)"
-          if [ ! -d .git ]; then
-            git init && git add -A && git commit -m "test"
-          fi
 
       - name: Build RPM with spec file
         run: |
@@ -116,6 +114,10 @@ jobs:
 
           # Get upstream version from configure.ac
           VERSION=$(grep -m1 'AC_INIT' configure.ac | sed -E 's/.*\[([0-9]+\.[0-9]+\.[0-9]+)\].*/\1/')
+          if [[ -z "$VERSION" || ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "ERROR: Invalid VERSION '$VERSION' extracted from configure.ac"
+            exit 1
+          fi
 
           # Create source tarball
           # Note: sw_rev=1 is a placeholder for PR test builds only.

@@ -657,11 +657,11 @@ jobs:
           VERSION="${{ needs.prepare.outputs.version }}"
           UPSTREAM="${{ needs.prepare.outputs.upstream_version }}"
 
-          # Create release notes
+          # Create release notes (using {{PLACEHOLDER}} pattern for clarity)
           cat > release-notes.md << 'EOF'
-          ## strongSwan SW $VERSION
+          ## strongSwan SW {{VERSION}}
 
-          This release is based on upstream strongSwan $UPSTREAM with SW fork modifications.
+          This release is based on upstream strongSwan {{UPSTREAM}} with SW fork modifications.
 
           ### Installation
 
@@ -695,12 +695,20 @@ jobs:
           For full changelog, see the [sw branch](https://github.com/structured-world/strongswan/tree/sw).
           EOF
 
-          # Substitute variables in release notes
-          sed -i "s/\$VERSION/${VERSION}/g" release-notes.md
-          sed -i "s/\$UPSTREAM/${UPSTREAM}/g" release-notes.md
+          # Substitute placeholders in release notes
+          sed -i "s/{{VERSION}}/${VERSION}/g" release-notes.md
+          sed -i "s/{{UPSTREAM}}/${UPSTREAM}/g" release-notes.md
 
-          # Create tag and release
-          gh release create "${VERSION}" \
-            --title "strongSwan SW ${VERSION}" \
-            --notes-file release-notes.md \
-            --target sw
+          # Create or update GitHub release (idempotent)
+          if gh release view "${VERSION}" >/dev/null 2>&1; then
+            echo "Release ${VERSION} exists, updating..."
+            gh release edit "${VERSION}" \
+              --title "strongSwan SW ${VERSION}" \
+              --notes-file release-notes.md
+          else
+            echo "Creating release ${VERSION}..."
+            gh release create "${VERSION}" \
+              --title "strongSwan SW ${VERSION}" \
+              --notes-file release-notes.md \
+              --target sw
+          fi
