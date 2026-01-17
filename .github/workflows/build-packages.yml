@@ -420,8 +420,6 @@ jobs:
 
           # Main package spec
           cat > ~/rpmbuild/SPECS/strongswan-sw.spec << 'SPEC_EOF'
-          %global debug_package %{nil}
-
           Name:           strongswan-sw
           Version:        %{pkg_version}
           Release:        1.sw%{?dist}
@@ -474,8 +472,6 @@ jobs:
 
           # PostgreSQL plugin package spec
           cat > ~/rpmbuild/SPECS/strongswan-pgsql.spec << 'SPEC_EOF'
-          %global debug_package %{nil}
-
           Name:           strongswan-pgsql
           Version:        %{pkg_version}
           Release:        1.sw%{?dist}
@@ -516,8 +512,6 @@ jobs:
             tar czf ~/rpmbuild/SOURCES/strongswan-dhcp-inform-${VERSION}.tar.gz dhcp-inform-plugin
 
             cat > ~/rpmbuild/SPECS/strongswan-dhcp-inform.spec << 'SPEC_EOF'
-            %global debug_package %{nil}
-
             Name:           strongswan-dhcp-inform
             Version:        %{pkg_version}
             Release:        1.sw%{?dist}
