@@ -59,8 +59,11 @@ jobs:
           # When upstream releases new version, we rebase and SW_REV resets to 1
           # IMPORTANT: Repository MUST use squash merging for PRs to sw branch
           # Manual commits or merge commits won't increment the version number
-          if git rev-parse "${UPSTREAM_VERSION}" >/dev/null 2>&1; then
+          # Use git tag -l to check for tags only (git rev-parse would also match branches)
+          if git tag -l "${UPSTREAM_VERSION}" | grep -q .; then
             # Tag exists - count squash merged PRs (commits with (#N) suffix)
+            # Note: This pattern matches GitHub's squash merge format; manual commits
+            # with similar suffixes are unlikely and would only inflate the version
             SW_REV=$(git log "${UPSTREAM_VERSION}..HEAD" --oneline | grep -E -c '\(#[0-9]+\)$' || echo 0)
             # Default to 1 if no PR merges found (minimum is sw.1)
             [ "$SW_REV" -eq 0 ] && SW_REV=1
@@ -393,6 +396,10 @@ jobs:
             echo "ERROR: No RPM packages were built" >&2
             exit 1
           fi
+          if ! ls srpms/*.rpm 1>/dev/null 2>&1; then
+            echo "ERROR: No SRPM packages were built" >&2
+            exit 1
+          fi
 
           echo "=== Binary RPMs ==="
           ls -la rpms/
@@ -407,6 +414,8 @@ jobs:
           retention-days: 7
 
       # Upload SRPM only from fc42 job to avoid duplicates (SRPMs are identical across distros)
+      # If fc42 build fails, SRPMs won't be uploaded - this is acceptable as binary
+      # RPMs are the primary deliverable and SRPMs can be regenerated from git
       - name: Upload SRPM artifacts
         if: matrix.fedora == 42
         uses: actions/upload-artifact@v4
