@@ -95,48 +95,53 @@ jobs:
             iptables-devel \
             gperf \
             flex \
-            bison
+            bison \
+            rpm-build \
+            rpmdevtools
 
-      - name: Run autoreconf
-        run: autoreconf -fiv
-
-      - name: Configure
+      - name: Setup git for tarball creation
         run: |
-          ./configure --disable-static \
-            --prefix=/usr \
-            --sysconfdir=/etc \
-            --enable-eap-identity \
-            --enable-eap-mschapv2 \
-            --enable-eap-radius \
-            --enable-eap-tls \
-            --enable-xauth-eap \
-            --enable-vici \
-            --enable-swanctl \
-            --enable-sql \
-            --enable-pgsql \
-            --enable-sqlite \
-            --enable-systemd \
-            --enable-openssl \
-            --enable-curl \
-            --enable-ldap \
-            --enable-gcrypt \
-            --enable-farp \
-            --enable-dhcp \
-            --enable-dhcp-inform \
-            --enable-attr-sql \
-            --enable-forecast \
-            --enable-pam \
-            --with-capabilities=libcap
+          # In container environments, actions/checkout may not create .git properly
+          # due to filesystem boundaries. Initialize if missing for git archive to work.
+          git config --global init.defaultBranch main
+          git config --global user.email "test@example.com"
+          git config --global user.name "Test"
+          git config --global --add safe.directory "$(pwd)"
+          if [ ! -d .git ]; then
+            git init && git add -A && git commit -m "test"
+          fi
 
-      - name: Build
-        run: make -j$(nproc)
-
-      - name: Verify plugins built
+      - name: Build RPM with spec file
         run: |
-          echo "=== Checking SW fork plugins ==="
-          ls -la src/libstrongswan/plugins/pgsql/.libs/libstrongswan-pgsql.so
-          ls -la src/libcharon/plugins/dhcp_inform/.libs/libstrongswan-dhcp-inform.so
-          echo "All SW fork plugins built successfully"
+          # Use rpmbuild to catch hardened build errors (-Werror=format-security)
+          rpmdev-setuptree
+
+          # Get upstream version from configure.ac
+          VERSION=$(grep -m1 'AC_INIT' configure.ac | sed -E 's/.*\[([0-9]+\.[0-9]+\.[0-9]+)\].*/\1/')
+          if [[ -z "$VERSION" || ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "ERROR: Invalid VERSION '$VERSION' extracted from configure.ac"
+            exit 1
+          fi
+
+          # Create source tarball
+          # Note: sw_rev=1 is a placeholder for PR test builds only.
+          # Actual release versions are determined by build-packages.yml
+          SOURCE_NAME="strongswan-${VERSION}-sw.1"
+          git archive --format=tar.gz --prefix="${SOURCE_NAME}/" HEAD > ~/rpmbuild/SOURCES/${SOURCE_NAME}.tar.gz
+
+          # Build with spec file (includes hardened build flags)
+          cp packaging/rpm/strongswan-sw.spec ~/rpmbuild/SPECS/
+          rpmbuild -ba ~/rpmbuild/SPECS/strongswan-sw.spec \
+            --define "upstream_version ${VERSION}" \
+            --define "sw_rev 1" \
+            --define "_topdir $HOME/rpmbuild"
+
+      - name: Verify packages built
+        run: |
+          echo "=== Checking built RPMs ==="
+          ls -la ~/rpmbuild/RPMS/*/*.rpm
+          ls -la ~/rpmbuild/SRPMS/*.rpm
+          echo "All RPM packages built successfully"
 
   # Test build on Ubuntu (DEB)
   build-test-deb:

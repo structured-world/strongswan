@@ -87,6 +87,10 @@ from PostgreSQL database. Delivers routes via DHCP option 121/249.
 %prep
 %autosetup -n strongswan-%{upstream_version}-sw.%{sw_rev}
 
+# Remove -Wno-format and -Wno-format-security from upstream configure.ac
+# Fedora's hardened build requires -Wformat to be enabled when using -Werror=format-security
+sed -i '/WARN_CFLAGS=.*-Wno-format/d' configure.ac
+
 %build
 autoreconf -fiv
 
@@ -146,12 +150,12 @@ done
 %dir %attr(700,root,root) %{_sysconfdir}/strongswan/ipsec.d/ocspcerts
 %dir %attr(700,root,root) %{_sysconfdir}/strongswan/ipsec.d/private
 %dir %attr(700,root,root) %{_sysconfdir}/strongswan/ipsec.d/reqs
-%dir %{_sysconfdir}/strongswan/swanctl
-%config(noreplace) %{_sysconfdir}/strongswan/*.conf
-%config(noreplace) %{_sysconfdir}/strongswan/strongswan.d
-%{_sysconfdir}/strongswan/swanctl/*
+%dir %{_sysconfdir}/swanctl
+%dir %{_sysconfdir}/swanctl/conf.d
+%config(noreplace) %{_sysconfdir}/strongswan.conf
+%config(noreplace) %{_sysconfdir}/strongswan.d
+%{_sysconfdir}/swanctl/*
 %{_unitdir}/strongswan.service
-%{_unitdir}/strongswan-swanctl.service
 %{_sbindir}/*
 %dir %{_libdir}/ipsec
 %dir %{_libdir}/ipsec/plugins
@@ -168,13 +172,13 @@ done
 %{_libdir}/ipsec/plugins/libstrongswan-dhcp-inform.so
 
 %post
-%systemd_post strongswan.service strongswan-swanctl.service
+%systemd_post strongswan.service
 
 %preun
-%systemd_preun strongswan.service strongswan-swanctl.service
+%systemd_preun strongswan.service
 
 %postun
-%systemd_postun_with_restart strongswan.service strongswan-swanctl.service
+%systemd_postun_with_restart strongswan.service
 
 %changelog
 # Use SOURCE_DATE_EPOCH for reproducible builds if set, otherwise current date
