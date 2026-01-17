@@ -173,7 +173,6 @@ done
 %systemd_postun_with_restart strongswan.service strongswan-swanctl.service
 
 %changelog
-# Note: Dynamic date is intentional - changelog reflects actual build date
-# For reproducible builds, use SOURCE_DATE_EPOCH environment variable
-* %(date "+%a %b %d %Y") SW Foundation <dev@sw.foundation> - %{version}-%{release}
+# Use SOURCE_DATE_EPOCH for reproducible builds if set, otherwise current date
+* %([ -n "$SOURCE_DATE_EPOCH" ] && date -d "@$SOURCE_DATE_EPOCH" "+%a %b %d %Y" || date "+%a %b %d %Y") SW Foundation <dev@sw.foundation> - %{version}-%{release}
 - strongSwan SW fork release

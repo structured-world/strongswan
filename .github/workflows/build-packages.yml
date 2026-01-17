@@ -20,7 +20,7 @@ on:
 jobs:
   prepare:
     # Run only on merged PRs, workflow_call, or workflow_dispatch
-    if: github.event.pull_request.merged || github.event_name != 'pull_request'
+    if: github.event.pull_request.merged == true || github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -450,6 +450,9 @@ jobs:
           merge-multiple: true
 
       - name: Download SRPM artifact
+        # continue-on-error: SRPM is only uploaded from fc42; if that build fails, skip SRPM
+        continue-on-error: true
+        id: download-srpm
         uses: actions/download-artifact@v4
         with:
           path: packages/srpm
@@ -462,7 +465,7 @@ jobs:
           echo "=== RPM packages ==="
           ls -la packages/rpm/
           echo "=== SRPM packages ==="
-          ls -la packages/srpm/
+          ls -la packages/srpm/ 2>/dev/null || echo "No SRPM packages (fc42 build may have failed)"
 
       - name: Clone repository
         uses: actions/checkout@v4
