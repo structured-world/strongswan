@@ -156,7 +156,6 @@ done
 %config(noreplace) %{_sysconfdir}/strongswan.d
 %{_sysconfdir}/swanctl/*
 %{_unitdir}/strongswan.service
-%{_unitdir}/strongswan-swanctl.service
 %{_sbindir}/*
 %dir %{_libdir}/ipsec
 %dir %{_libdir}/ipsec/plugins
@@ -173,13 +172,13 @@ done
 %{_libdir}/ipsec/plugins/libstrongswan-dhcp-inform.so
 
 %post
-%systemd_post strongswan.service strongswan-swanctl.service
+%systemd_post strongswan.service
 
 %preun
-%systemd_preun strongswan.service strongswan-swanctl.service
+%systemd_preun strongswan.service
 
 %postun
-%systemd_postun_with_restart strongswan.service strongswan-swanctl.service
+%systemd_postun_with_restart strongswan.service
 
 %changelog
 # Use SOURCE_DATE_EPOCH for reproducible builds if set, otherwise current date
