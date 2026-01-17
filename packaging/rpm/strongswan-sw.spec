@@ -119,6 +119,9 @@ autoreconf -fiv
     --enable-pam \
     --with-capabilities=libcap
 
+# Override -Wno-format from upstream configure.ac to satisfy Fedora's -Werror=format-security
+export CFLAGS="${CFLAGS} -Wformat"
+
 %make_build
 
 %install
