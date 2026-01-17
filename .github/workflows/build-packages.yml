@@ -477,7 +477,7 @@ jobs:
       - name: Clone repository
         uses: actions/checkout@v4
         with:
-          repository: structured-world/repo
+          repository: structured-world/strongswan-sw-repo
           token: ${{ secrets.REPO_TOKEN }}
           path: repo
 
@@ -670,7 +670,7 @@ jobs:
           **Fedora/RHEL:**
           ```bash
           # Add repository (one-time setup)
-          sudo dnf config-manager --add-repo https://structured-world.github.io/strongswan-sw-repo/rpm/fedora/\$releasever/strongswan-sw.repo
+          sudo dnf config-manager --add-repo https://structured-world.github.io/strongswan-sw-repo/rpm/fc\$releasever/strongswan-sw.repo
 
           # Install
           sudo dnf install strongswan-sw

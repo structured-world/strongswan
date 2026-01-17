@@ -90,6 +90,10 @@ from PostgreSQL database. Delivers routes via DHCP option 121/249.
 %build
 autoreconf -fiv
 
+# Override -Wno-format from upstream configure.ac to satisfy Fedora's -Werror=format-security
+# Must be set before %configure so it's used during both configure and make
+export CFLAGS="${CFLAGS} -Wformat"
+
 %configure --disable-static \
     --prefix=/usr \
     --sysconfdir=/etc \
@@ -118,9 +122,6 @@ autoreconf -fiv
     --enable-forecast \
     --enable-pam \
     --with-capabilities=libcap
-
-# Override -Wno-format from upstream configure.ac to satisfy Fedora's -Werror=format-security
-export CFLAGS="${CFLAGS} -Wformat"
 
 %make_build
 
