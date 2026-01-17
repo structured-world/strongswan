@@ -405,8 +405,12 @@ METHOD(dhcp_inform_provider_t, get_routes, linked_list_t*,
 		if (this->global_routes &&
 			this->global_routes->get_count(this->global_routes) > 0)
 		{
+			linked_list_t *routes;
+
 			DBG2(DBG_CFG, "dhcp-inform: returning global routes (no client IP)");
-			return clone_routes(this->global_routes);
+			routes = clone_routes(this->global_routes);
+			/* Return empty list on allocation failure */
+			return routes ? routes : linked_list_create();
 		}
 		return linked_list_create();
 	}
@@ -424,6 +428,8 @@ METHOD(dhcp_inform_provider_t, get_routes, linked_list_t*,
 	{
 		if (ip_in_subnet(client, pool->network, pool->prefix))
 		{
+			linked_list_t *routes;
+
 			enumerator->destroy(enumerator);
 			client->destroy(client);
 
@@ -431,7 +437,9 @@ METHOD(dhcp_inform_provider_t, get_routes, linked_list_t*,
 				 "returning %d pool-specific routes",
 				 client_ip, pool->name, pool->routes->get_count(pool->routes));
 
-			return clone_routes(pool->routes);
+			routes = clone_routes(pool->routes);
+			/* Return empty list on allocation failure */
+			return routes ? routes : linked_list_create();
 		}
 	}
 	enumerator->destroy(enumerator);
@@ -441,9 +449,13 @@ METHOD(dhcp_inform_provider_t, get_routes, linked_list_t*,
 	if (this->global_routes &&
 		this->global_routes->get_count(this->global_routes) > 0)
 	{
+		linked_list_t *routes;
+
 		DBG1(DBG_CFG, "dhcp-inform: client %s using %d global routes",
 			 client_ip, this->global_routes->get_count(this->global_routes));
-		return clone_routes(this->global_routes);
+		routes = clone_routes(this->global_routes);
+		/* Return empty list on allocation failure */
+		return routes ? routes : linked_list_create();
 	}
 
 	DBG1(DBG_CFG, "dhcp-inform: no routes configured for client %s", client_ip);
