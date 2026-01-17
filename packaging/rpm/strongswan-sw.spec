@@ -87,8 +87,8 @@ from PostgreSQL database. Delivers routes via DHCP option 121/249.
 %prep
 %autosetup -n strongswan-%{upstream_version}-sw.%{sw_rev}
 
-# Remove -Wno-format from upstream configure.ac to satisfy Fedora's -Werror=format-security
-# Fedora requires -Wformat to be enabled when using -Wformat-security
+# Remove -Wno-format and -Wno-format-security from upstream configure.ac
+# Fedora's hardened build requires -Wformat to be enabled when using -Werror=format-security
 sed -i '/WARN_CFLAGS=.*-Wno-format/d' configure.ac
 
 %build
@@ -150,10 +150,11 @@ done
 %dir %attr(700,root,root) %{_sysconfdir}/strongswan/ipsec.d/ocspcerts
 %dir %attr(700,root,root) %{_sysconfdir}/strongswan/ipsec.d/private
 %dir %attr(700,root,root) %{_sysconfdir}/strongswan/ipsec.d/reqs
-%dir %{_sysconfdir}/strongswan/swanctl
-%config(noreplace) %{_sysconfdir}/strongswan/*.conf
-%config(noreplace) %{_sysconfdir}/strongswan/strongswan.d
-%{_sysconfdir}/strongswan/swanctl/*
+%dir %{_sysconfdir}/swanctl
+%dir %{_sysconfdir}/swanctl/conf.d
+%config(noreplace) %{_sysconfdir}/strongswan.conf
+%config(noreplace) %{_sysconfdir}/strongswan.d
+%{_sysconfdir}/swanctl/*
 %{_unitdir}/strongswan.service
 %{_unitdir}/strongswan-swanctl.service
 %{_sbindir}/*
