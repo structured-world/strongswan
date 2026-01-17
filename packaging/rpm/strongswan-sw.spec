@@ -24,6 +24,8 @@ BuildRequires:  gmp-devel
 BuildRequires:  libcurl-devel
 BuildRequires:  openldap-devel
 BuildRequires:  openssl-devel
+# Fedora 41+ moved deprecated OpenSSL ENGINE API to separate package
+# Fedora 39/40 include ENGINE in main openssl-devel, so no conditional needed there
 %if 0%{?fedora} >= 41
 BuildRequires:  openssl-devel-engine
 %endif
@@ -50,6 +52,8 @@ Requires:       libgcrypt
 
 Provides:       strongswan = %{upstream_version}
 Conflicts:      strongswan
+# Obsoletes stock Fedora strongswan package (e.g., 6.0.4-1.fc42)
+# Uses upstream_version intentionally - our .sw.N suffix makes our version higher
 Obsoletes:      strongswan < %{upstream_version}
 
 %description
