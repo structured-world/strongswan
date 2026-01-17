@@ -1,0 +1,214 @@
+name: PR Build Test
+
+# Run build test on PRs to sw branch
+# CodeQL check is handled separately via branch protection rules
+on:
+  pull_request:
+    branches: [sw]
+    types: [opened, synchronize, reopened]
+
+# Cancel in-progress runs for same PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  # Check for unresolved review threads
+  check-reviews:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check unresolved threads
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+            });
+
+            // Use GraphQL to get review threads
+            const query = `
+              query($owner: String!, $repo: String!, $pr: Int!) {
+                repository(owner: $owner, name: $repo) {
+                  pullRequest(number: $pr) {
+                    reviewThreads(first: 100) {
+                      nodes {
+                        isResolved
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const result = await github.graphql(query, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pr: context.payload.pull_request.number,
+            });
+
+            const threads = result.repository.pullRequest.reviewThreads.nodes;
+            const unresolvedCount = threads.filter(t => !t.isResolved).length;
+
+            if (unresolvedCount > 0) {
+              core.setFailed(`PR has ${unresolvedCount} unresolved review thread(s). Address all comments before build test runs.`);
+            } else {
+              core.info(`All ${threads.length} review threads are resolved`);
+            }
+
+  # Test build on one Fedora version (fastest feedback)
+  build-test-rpm:
+    needs: check-reviews
+    runs-on: ubuntu-latest
+    container:
+      image: fedora:42
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          dnf install -y \
+            git \
+            gcc \
+            make \
+            autoconf \
+            automake \
+            libtool \
+            pkgconfig \
+            gettext-devel \
+            gmp-devel \
+            openssl-devel \
+            openssl-devel-engine \
+            libcurl-devel \
+            libpq-devel \
+            systemd \
+            systemd-devel \
+            systemd-rpm-macros \
+            libcap-devel \
+            pam-devel \
+            openldap-devel \
+            sqlite-devel \
+            libgcrypt-devel \
+            iptables-devel \
+            gperf \
+            flex \
+            bison
+
+      - name: Run autoreconf
+        run: autoreconf -fiv
+
+      - name: Configure
+        run: |
+          ./configure --disable-static \
+            --prefix=/usr \
+            --sysconfdir=/etc \
+            --enable-eap-identity \
+            --enable-eap-mschapv2 \
+            --enable-eap-radius \
+            --enable-eap-tls \
+            --enable-xauth-eap \
+            --enable-vici \
+            --enable-swanctl \
+            --enable-sql \
+            --enable-pgsql \
+            --enable-sqlite \
+            --enable-systemd \
+            --enable-openssl \
+            --enable-curl \
+            --enable-ldap \
+            --enable-gcrypt \
+            --enable-farp \
+            --enable-dhcp \
+            --enable-dhcp-inform \
+            --enable-attr-sql \
+            --enable-forecast \
+            --enable-pam \
+            --with-capabilities=libcap
+
+      - name: Build
+        run: make -j$(nproc)
+
+      - name: Verify plugins built
+        run: |
+          echo "=== Checking SW fork plugins ==="
+          ls -la src/libstrongswan/plugins/pgsql/.libs/libstrongswan-pgsql.so
+          ls -la src/libcharon/plugins/dhcp_inform/.libs/libstrongswan-dhcp-inform.so
+          echo "All SW fork plugins built successfully"
+
+  # Test build on Ubuntu (DEB)
+  build-test-deb:
+    needs: check-reviews
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            autoconf \
+            automake \
+            libtool \
+            pkg-config \
+            gettext \
+            libgmp-dev \
+            libssl-dev \
+            libcurl4-openssl-dev \
+            libpq-dev \
+            libsystemd-dev \
+            libcap-dev \
+            libpam0g-dev \
+            libldap2-dev \
+            libsqlite3-dev \
+            libgcrypt20-dev \
+            libiptc-dev \
+            gperf \
+            flex \
+            bison
+
+      - name: Run autoreconf
+        run: autoreconf -fiv
+
+      - name: Configure
+        run: |
+          ./configure --disable-static \
+            --prefix=/usr \
+            --sysconfdir=/etc \
+            --enable-eap-identity \
+            --enable-eap-mschapv2 \
+            --enable-eap-radius \
+            --enable-eap-tls \
+            --enable-xauth-eap \
+            --enable-vici \
+            --enable-swanctl \
+            --enable-sql \
+            --enable-pgsql \
+            --enable-sqlite \
+            --enable-systemd \
+            --enable-openssl \
+            --enable-curl \
+            --enable-ldap \
+            --enable-gcrypt \
+            --enable-farp \
+            --enable-dhcp \
+            --enable-dhcp-inform \
+            --enable-attr-sql \
+            --enable-forecast \
+            --enable-pam \
+            --with-capabilities=libcap
+
+      - name: Build
+        run: make -j$(nproc)
+
+      - name: Verify plugins built
+        run: |
+          echo "=== Checking SW fork plugins ==="
+          ls -la src/libstrongswan/plugins/pgsql/.libs/libstrongswan-pgsql.so
+          ls -la src/libcharon/plugins/dhcp_inform/.libs/libstrongswan-dhcp-inform.so
+          echo "All SW fork plugins built successfully"
