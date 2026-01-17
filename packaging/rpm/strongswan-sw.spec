@@ -142,6 +142,7 @@ done
 %{_unitdir}/strongswan-swanctl.service
 %{_sbindir}/*
 %dir %{_libdir}/ipsec
+%dir %{_libdir}/ipsec/plugins
 %{_libdir}/ipsec/*
 %exclude %{_libdir}/ipsec/plugins/libstrongswan-pgsql.so
 %exclude %{_libdir}/ipsec/plugins/libstrongswan-dhcp-inform.so
