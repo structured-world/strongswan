@@ -152,14 +152,13 @@ done
 %dir %attr(700,root,root) %{_sysconfdir}/strongswan/ipsec.d/private
 %dir %attr(700,root,root) %{_sysconfdir}/strongswan/ipsec.d/reqs
 %dir %{_sysconfdir}/swanctl
-%dir %{_sysconfdir}/swanctl/bliss
 %dir %{_sysconfdir}/swanctl/conf.d
-%dir %{_sysconfdir}/swanctl/ecdsa
-%dir %{_sysconfdir}/swanctl/pkcs8
-%dir %{_sysconfdir}/swanctl/pkcs12
-%dir %{_sysconfdir}/swanctl/private
+%dir %attr(750,root,root) %{_sysconfdir}/swanctl/ecdsa
+%dir %attr(750,root,root) %{_sysconfdir}/swanctl/pkcs8
+%dir %attr(750,root,root) %{_sysconfdir}/swanctl/pkcs12
+%dir %attr(750,root,root) %{_sysconfdir}/swanctl/private
 %dir %{_sysconfdir}/swanctl/pubkey
-%dir %{_sysconfdir}/swanctl/rsa
+%dir %attr(750,root,root) %{_sysconfdir}/swanctl/rsa
 %dir %{_sysconfdir}/swanctl/x509
 %dir %{_sysconfdir}/swanctl/x509aa
 %dir %{_sysconfdir}/swanctl/x509ac
