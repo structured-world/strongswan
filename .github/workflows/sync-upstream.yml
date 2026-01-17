@@ -89,14 +89,15 @@ jobs:
           # Force push is intentional here - master should always mirror
           # the upstream release exactly. This repo is a fork where only
           # the sw branch contains our modifications.
-          git checkout master
+          # Use explicit origin/master to avoid ambiguity with upstream/master
+          git checkout -B master origin/master
           git reset --hard "$UPSTREAM_TAG"
           git push origin master --force
 
           # Rebase sw branch onto the release
           git checkout sw
 
-          if git rebase master; then
+          if git rebase origin/master; then
             echo "Rebase successful"
             git push origin sw --force-with-lease
             echo "rebase_success=true" >> $GITHUB_OUTPUT
