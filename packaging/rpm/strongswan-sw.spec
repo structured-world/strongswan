@@ -174,15 +174,30 @@ done
 %{_sbindir}/charon-systemd
 # Systemd service
 %{_unitdir}/strongswan.service
-# Libraries and plugins
+# Helper scripts and binaries
+%{_libdir}/ipsec/_updown
+%{_libdir}/ipsec/charon
+%{_libdir}/ipsec/pool
+%{_libdir}/ipsec/xfrmi
+# Libraries
 %dir %{_libdir}/ipsec
 %dir %{_libdir}/ipsec/plugins
+%{_libdir}/ipsec/libcharon.so
 %{_libdir}/ipsec/libcharon.so.0
 %{_libdir}/ipsec/libcharon.so.0.0.0
+%{_libdir}/ipsec/libradius.so
+%{_libdir}/ipsec/libradius.so.0
+%{_libdir}/ipsec/libradius.so.0.0.0
+%{_libdir}/ipsec/libstrongswan.so
 %{_libdir}/ipsec/libstrongswan.so.0
 %{_libdir}/ipsec/libstrongswan.so.0.0.0
+%{_libdir}/ipsec/libtls.so
+%{_libdir}/ipsec/libtls.so.0
+%{_libdir}/ipsec/libtls.so.0.0.0
+%{_libdir}/ipsec/libvici.so
 %{_libdir}/ipsec/libvici.so.0
 %{_libdir}/ipsec/libvici.so.0.0.0
+# Plugins
 %{_libdir}/ipsec/plugins/libstrongswan-*.so
 %exclude %{_libdir}/ipsec/plugins/libstrongswan-pgsql.so
 %exclude %{_libdir}/ipsec/plugins/libstrongswan-dhcp-inform.so
