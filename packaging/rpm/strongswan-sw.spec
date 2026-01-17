@@ -87,6 +87,10 @@ from PostgreSQL database. Delivers routes via DHCP option 121/249.
 %prep
 %autosetup -n strongswan-%{upstream_version}-sw.%{sw_rev}
 
+# Remove -Wno-format from upstream configure.ac to satisfy Fedora's -Werror=format-security
+# Fedora requires -Wformat to be enabled when using -Wformat-security
+sed -i '/WARN_CFLAGS=.*-Wno-format/d' configure.ac
+
 %build
 autoreconf -fiv
 
@@ -119,9 +123,7 @@ autoreconf -fiv
     --enable-pam \
     --with-capabilities=libcap
 
-# Override -Wno-format from upstream configure.ac to satisfy Fedora's -Werror=format-security
-# Pass -Wformat via make to append after configure's WARN_CFLAGS
-%make_build CFLAGS="%{build_cflags} -Wformat"
+%make_build
 
 %install
 %make_install
