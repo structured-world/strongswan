@@ -1,9 +1,9 @@
 name: Sync with Upstream Release
 
 on:
-  # Check for new upstream releases daily
+  # Check for new upstream releases hourly
   schedule:
-    - cron: '0 6 * * *'
+    - cron: '0 * * * *'
   workflow_dispatch:
     inputs:
       upstream_tag:
