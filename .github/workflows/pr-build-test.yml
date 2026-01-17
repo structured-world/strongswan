@@ -1,6 +1,7 @@
 name: PR Build Test
 
-# Run build test on PRs to sw branch after reviews are addressed
+# Run build test on PRs to sw branch
+# CodeQL check is handled separately via branch protection rules
 on:
   pull_request:
     branches: [sw]
@@ -12,44 +13,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Wait for CodeQL if it's running on this PR
-  wait-for-codeql:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check CodeQL status
-        uses: actions/github-script@v7
-        with:
-          script: |
-            // Get check runs for this commit
-            const { data: checkRuns } = await github.rest.checks.listForRef({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              ref: context.payload.pull_request.head.sha,
-            });
-
-            // Find CodeQL check
-            const codeqlCheck = checkRuns.check_runs.find(
-              run => run.name === 'CodeQL' || run.name.includes('codeql')
-            );
-
-            if (codeqlCheck) {
-              if (codeqlCheck.status !== 'completed') {
-                core.info('CodeQL is still running, will wait...');
-                // GitHub Actions will retry this job
-                throw new Error('CodeQL check not yet completed');
-              }
-              if (codeqlCheck.conclusion !== 'success') {
-                core.setFailed(`CodeQL check failed with: ${codeqlCheck.conclusion}`);
-              }
-              core.info('CodeQL check passed');
-            } else {
-              core.info('No CodeQL check found (paths may not match), proceeding');
-            }
-
   # Check for unresolved review threads
   check-reviews:
     runs-on: ubuntu-latest
-    needs: wait-for-codeql
     steps:
       - name: Check unresolved threads
         uses: actions/github-script@v7
