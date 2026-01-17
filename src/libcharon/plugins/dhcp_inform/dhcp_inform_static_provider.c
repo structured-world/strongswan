@@ -318,6 +318,14 @@ static void load_pools(private_dhcp_inform_static_provider_t *this)
 			.prefix = prefix,
 		);
 
+		if (!entry->name)
+		{
+			DBG1(DBG_CFG, "dhcp-inform: failed to allocate name for pool '%s'",
+				 pool_name);
+			pool_entry_destroy(entry);
+			continue;
+		}
+
 		int len = snprintf(routes_section, sizeof(routes_section),
 						   "pools.%s.routes", pool_name);
 		if (len < 0 || len >= (int)sizeof(routes_section))
@@ -328,6 +336,14 @@ static void load_pools(private_dhcp_inform_static_provider_t *this)
 			continue;
 		}
 		entry->routes = load_routes_from_section(routes_section);
+
+		if (!entry->routes)
+		{
+			DBG1(DBG_CFG, "dhcp-inform: failed to load routes for pool '%s'",
+				 pool_name);
+			pool_entry_destroy(entry);
+			continue;
+		}
 
 		if (entry->routes->get_count(entry->routes) > 0)
 		{
@@ -380,7 +396,8 @@ METHOD(dhcp_inform_provider_t, get_routes, linked_list_t*,
 	if (!client_ip)
 	{
 		/* No client IP - return global routes */
-		if (this->global_routes->get_count(this->global_routes) > 0)
+		if (this->global_routes &&
+			this->global_routes->get_count(this->global_routes) > 0)
 		{
 			DBG2(DBG_CFG, "dhcp-inform: returning global routes (no client IP)");
 			return clone_routes(this->global_routes);
@@ -415,7 +432,8 @@ METHOD(dhcp_inform_provider_t, get_routes, linked_list_t*,
 	client->destroy(client);
 
 	/* Fall back to global routes */
-	if (this->global_routes->get_count(this->global_routes) > 0)
+	if (this->global_routes &&
+		this->global_routes->get_count(this->global_routes) > 0)
 	{
 		DBG1(DBG_CFG, "dhcp-inform: client %s using %d global routes",
 			 client_ip, this->global_routes->get_count(this->global_routes));
@@ -475,7 +493,8 @@ dhcp_inform_static_provider_t *dhcp_inform_static_provider_create()
 
 	/* Load global routes */
 	this->global_routes = load_routes_from_section("routes");
-	if (this->global_routes->get_count(this->global_routes) > 0)
+	if (this->global_routes &&
+		this->global_routes->get_count(this->global_routes) > 0)
 	{
 		this->has_routes = TRUE;
 		DBG1(DBG_CFG, "dhcp-inform: loaded %d global static routes",

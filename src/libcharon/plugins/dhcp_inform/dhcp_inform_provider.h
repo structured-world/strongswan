@@ -32,6 +32,7 @@ struct dhcp_inform_provider_t {
 	/**
 	 * Get routes for a client by virtual IP.
 	 *
+	 * @param this			provider instance
 	 * @param client_ip		client's virtual IP address string
 	 * @return				linked_list_t of traffic_selector_t (caller destroys),
 	 *						or NULL on error
@@ -42,6 +43,7 @@ struct dhcp_inform_provider_t {
 	/**
 	 * Get provider name for logging.
 	 *
+	 * @param this			provider instance
 	 * @return				provider name string (static, do not free)
 	 */
 	const char* (*get_name)(dhcp_inform_provider_t *this);
@@ -49,12 +51,15 @@ struct dhcp_inform_provider_t {
 	/**
 	 * Check if provider is available/configured.
 	 *
+	 * @param this			provider instance
 	 * @return				TRUE if provider can provide routes
 	 */
 	bool (*is_available)(dhcp_inform_provider_t *this);
 
 	/**
 	 * Destroy provider instance.
+	 *
+	 * @param this			provider instance
 	 */
 	void (*destroy)(dhcp_inform_provider_t *this);
 };
