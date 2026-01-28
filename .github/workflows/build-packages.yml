@@ -330,7 +330,6 @@ jobs:
           dpkg-sig --sign builder -k "$GPG_KEY_FPR" "${deb_files[@]}"
           dpkg-sig --verify "${deb_files[@]}"
           cleanup_keyfile
-          trap - EXIT
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -497,10 +496,10 @@ jobs:
 
           rm -f ~/.rpmmacros
           cat > ~/.rpmmacros << EOF
-          %_signature gpg
-          %_gpg_name ${GPG_KEY_FPR}
-          %_gpg_digest_algo sha256
-          EOF
+%_signature gpg
+%_gpg_name ${GPG_KEY_FPR}
+%_gpg_digest_algo sha256
+EOF
 
           shopt -s nullglob
           rpm_files=(rpms/*.rpm)
@@ -516,7 +515,6 @@ jobs:
             rpmsign --addsign "${srpm_files[@]}"
           fi
           cleanup_keyfile
-          trap - EXIT
 
       - name: Upload RPM artifacts
         uses: actions/upload-artifact@v4
@@ -573,15 +571,16 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           START_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          RUN_MATCH="strongswan ${{ github.run_id }}"
+          PUBLISH_WORKFLOW_NAME="Publish Repo"
+          RUN_MATCH="Publish Repo (strongswan ${{ github.run_id }})"
           START_TIMEOUT_SECONDS=600
           START_POLL_INTERVAL=10
           START_MAX_ATTEMPTS=$((START_TIMEOUT_SECONDS / START_POLL_INTERVAL))
           # Workflow name must match repo workflow name exactly.
           for ((i=1; i<=START_MAX_ATTEMPTS; i++)); do
             echo "Waiting for Publish Repo to start (attempt ${i}/${START_MAX_ATTEMPTS}, started ${START_TIME})..."
-            RUN_IDS=$(gh run list -R structured-world/repo -w "Publish Repo" --json databaseId,createdAt,event,displayTitle \
-              --jq ".[] | select(.event == \"workflow_dispatch\" and (.displayTitle | contains(\"$RUN_MATCH\"))) | .databaseId") || {
+            RUN_IDS=$(gh run list -R structured-world/repo -w "$PUBLISH_WORKFLOW_NAME" --json databaseId,createdAt,event,displayTitle \
+              --jq ".[] | select(.event == \"workflow_dispatch\" and .createdAt >= \"${START_TIME}\" and .displayTitle == \"${RUN_MATCH}\") | .databaseId") || {
               echo "Error: gh run list failed while waiting for Publish Repo workflow" >&2
               exit 1
             }
