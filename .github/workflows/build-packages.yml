@@ -294,8 +294,41 @@ jobs:
         env:
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
         run: |
-          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
-          dpkg-sig --sign builder -k "packages@sw.foundation" *.deb
+          set -euo pipefail
+          if [ -z "${GPG_PRIVATE_KEY:-}" ]; then
+            echo "GPG_PRIVATE_KEY is not set; cannot sign DEB packages." >&2
+            exit 1
+          fi
+          shopt -s nullglob
+          deb_files=( *.deb )
+          if [ ${#deb_files[@]} -eq 0 ]; then
+            echo "Error: No .deb packages found to sign." >&2
+            exit 1
+          fi
+
+          keyfile="$(mktemp)"
+          chmod 600 "$keyfile"
+          printf '%s\n' "$GPG_PRIVATE_KEY" > "$keyfile"
+
+          if ! gpg --batch --import "$keyfile"; then
+            echo "Failed to import GPG private key; aborting DEB signing." >&2
+            rm -f "$keyfile"
+            exit 1
+          fi
+
+          GPG_KEY_FPR="$(gpg --with-colons --import-options show-only --import "$keyfile" 2>/dev/null | awk -F: '/^fpr:/ {print $10; exit}')"
+          rm -f "$keyfile"
+          if [ -z "${GPG_KEY_FPR:-}" ]; then
+            echo "Error: Failed to determine GPG key fingerprint for DEB signing." >&2
+            exit 1
+          fi
+          if ! gpg --batch --with-colons --list-keys "$GPG_KEY_FPR" | grep -q '^fpr:'; then
+            echo "Expected GPG key fingerprint not found in keyring" >&2
+            exit 1
+          fi
+
+          dpkg-sig --sign builder -k "$GPG_KEY_FPR" "${deb_files[@]}"
+          dpkg-sig --verify "${deb_files[@]}"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -434,14 +467,52 @@ jobs:
         env:
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
         run: |
-          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
-          cat > ~/.rpmmacros << 'EOF'
+          set -euo pipefail
+          if [ -z "${GPG_PRIVATE_KEY:-}" ]; then
+            echo "GPG_PRIVATE_KEY is not set; cannot sign RPM packages." >&2
+            exit 1
+          fi
+          keyfile="$(mktemp)"
+          chmod 600 "$keyfile"
+          printf '%s\n' "$GPG_PRIVATE_KEY" > "$keyfile"
+
+          if ! gpg --batch --import "$keyfile"; then
+            echo "Failed to import GPG private key; aborting RPM signing." >&2
+            rm -f "$keyfile"
+            exit 1
+          fi
+
+          GPG_KEY_FPR="$(gpg --with-colons --import-options show-only --import "$keyfile" 2>/dev/null | awk -F: '/^fpr:/ {print $10; exit}')"
+          rm -f "$keyfile"
+          if [ -z "${GPG_KEY_FPR:-}" ]; then
+            echo "Error: Failed to determine GPG key fingerprint for RPM signing." >&2
+            exit 1
+          fi
+          if ! gpg --batch --with-colons --list-keys "$GPG_KEY_FPR" | grep -q '^fpr:'; then
+            echo "Expected GPG key fingerprint not found in keyring" >&2
+            exit 1
+          fi
+
+          rm -f ~/.rpmmacros
+          cat > ~/.rpmmacros << EOF
           %_signature gpg
-          %_gpg_name packages@sw.foundation
+          %_gpg_name ${GPG_KEY_FPR}
           %_gpg_digest_algo sha256
           EOF
-          rpmsign --addsign rpms/*.rpm
-          rpmsign --addsign srpms/*.rpm
+
+          shopt -s nullglob
+          rpm_files=(rpms/*.rpm)
+          srpm_files=(srpms/*.rpm)
+          if [ ${#rpm_files[@]} -gt 0 ]; then
+            rpmsign --addsign "${rpm_files[@]}"
+          else
+            echo "No binary RPMs found in rpms/, skipping signing."
+          fi
+          if [ ${#srpm_files[@]} -gt 0 ]; then
+            rpmsign --addsign "${srpm_files[@]}"
+          else
+            echo "No source RPMs found in srpms/, skipping signing."
+          fi
 
       - name: Upload RPM artifacts
         uses: actions/upload-artifact@v4
@@ -474,11 +545,17 @@ jobs:
         with:
           app-id: ${{ secrets.RELEASER_APP_ID }}
           private-key: ${{ secrets.RELEASER_APP_PRIVATE_KEY }}
+          owner: structured-world
+          repositories: repo
+          permissions:
+            actions: write
+            contents: read
 
       - name: Trigger repo publish workflow
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
+          # publish.yml expects workflow_dispatch input: strongswan_run_id
           if ! gh workflow run publish.yml \
             -R structured-world/repo \
             -f strongswan_run_id=${{ github.run_id }}; then
@@ -492,16 +569,22 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           START_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          for _ in $(seq 1 30); do
-            RUN_ID=$(gh run list -R structured-world/repo -w "Publish Repo" --json databaseId,createdAt,event \
-              --jq ".[] | select(.createdAt >= \\\"$START_TIME\\\") | .databaseId" | head -n1)
+          # Workflow name must match repo workflow name exactly.
+          for ((i=1; i<=30; i++)); do
+            echo "Waiting for Publish Repo to start (attempt ${i}/30)..."
+            RUN_IDS=$(gh run list -R structured-world/repo -w "Publish Repo" --json databaseId,createdAt,event \
+              --jq ".[] | select(.event == \"workflow_dispatch\" and .createdAt >= \\\"$START_TIME\\\") | .databaseId") || {
+              echo "Error: gh run list failed while waiting for Publish Repo workflow" >&2
+              exit 1
+            }
+            RUN_ID=$(printf '%s\n' "$RUN_IDS" | head -n1)
             if [ -n "$RUN_ID" ]; then
               echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
               exit 0
             fi
             sleep 10
           done
-          echo "Error: timed out waiting for Publish Repo to start" >&2
+          echo "Error: timed out waiting for Publish Repo to start after 300 seconds" >&2
           exit 1
 
   # Create GitHub Release in the fork (no artifacts, just links to package repo)
@@ -518,6 +601,10 @@ jobs:
         with:
           app-id: ${{ secrets.RELEASER_APP_ID }}
           private-key: ${{ secrets.RELEASER_APP_PRIVATE_KEY }}
+          owner: structured-world
+          repositories: strongswan
+          permissions:
+            contents: write
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -533,8 +620,15 @@ jobs:
             echo "Error: missing publish run id" >&2
             exit 1
           fi
-          for _ in $(seq 1 60); do
-            STATUS=$(gh run view -R structured-world/repo $RUN_ID --json status,conclusion --jq '.status + ":" + (.conclusion // "")')
+          for ((i=1; i<=60; i++)); do
+            if ! STATUS=$(gh run view -R structured-world/repo "$RUN_ID" --json status,conclusion --jq '(.status // "unknown") + ":" + (.conclusion // "none")'); then
+              echo "Error: failed to query status for publish workflow run $RUN_ID" >&2
+              exit 1
+            fi
+            if [ -z "$STATUS" ]; then
+              echo "Error: empty status returned for publish workflow run $RUN_ID" >&2
+              exit 1
+            fi
             case "$STATUS" in
               completed:success)
                 echo "Publish workflow completed successfully"
@@ -545,11 +639,12 @@ jobs:
                 exit 1
                 ;;
               *)
+                echo "Waiting for publish workflow to complete (attempt ${i}/60, status: $STATUS)"
                 sleep 10
                 ;;
             esac
           done
-          echo "Error: timed out waiting for Publish Repo completion" >&2
+          echo "Error: timed out waiting for Publish Repo completion after 600 seconds" >&2
           exit 1
 
       - name: Create GitHub Release
