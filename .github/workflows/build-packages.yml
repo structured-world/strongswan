@@ -480,6 +480,33 @@ jobs:
             echo "GPG_PRIVATE_KEY is not set; cannot sign RPM packages." >&2
             exit 1
           fi
+          setup_gpg_signing() {
+            local keyfile import_output
+            keyfile="$(mktemp)"
+            cleanup_keyfile() {
+              if command -v shred >/dev/null 2>&1; then
+                shred -u "$keyfile"
+              else
+                rm -f "$keyfile"
+              fi
+            }
+            trap cleanup_keyfile EXIT
+            chmod 600 "$keyfile"
+            printf '%s\n' "$GPG_PRIVATE_KEY" > "$keyfile"
+            if ! import_output="$(gpg --batch --with-colons --import-options import-show --import "$keyfile")"; then
+              echo "Failed to import GPG private key; aborting RPM signing." >&2
+              exit 1
+            fi
+            GPG_KEY_FPR="$(printf '%s\n' "$import_output" | awk -F: '/^fpr:/ {print $10; exit}')"
+            if [ -z "${GPG_KEY_FPR:-}" ]; then
+              echo "Error: Failed to determine GPG key fingerprint for RPM signing." >&2
+              exit 1
+            fi
+            if ! gpg --batch --with-colons --list-keys "$GPG_KEY_FPR" | grep -q '^fpr:'; then
+              echo "Expected GPG key fingerprint not found in keyring" >&2
+              exit 1
+            fi
+          }
           setup_gpg_signing
 
           rm -f ~/.rpmmacros
@@ -502,11 +529,11 @@ EOF
           if [ ${#srpm_files[@]} -gt 0 ]; then
             rpmsign --addsign "${srpm_files[@]}"
           fi
-          if [ ${#rpm_files[@]} -gt 0 ] && ! rpm --checksig "${rpm_files[@]}" >/dev/null 2>&1; then
+          if [ ${#rpm_files[@]} -gt 0 ] && ! rpm --checksig "${rpm_files[@]}"; then
             echo "Error: Failed to verify RPM signatures" >&2
             exit 1
           fi
-          if [ ${#srpm_files[@]} -gt 0 ] && ! rpm --checksig "${srpm_files[@]}" >/dev/null 2>&1; then
+          if [ ${#srpm_files[@]} -gt 0 ] && ! rpm --checksig "${srpm_files[@]}"; then
             echo "Error: Failed to verify SRPM signatures" >&2
             exit 1
           fi
@@ -573,7 +600,6 @@ EOF
           START_POLL_INTERVAL=10
           START_MAX_ATTEMPTS=$((START_TIMEOUT_SECONDS / START_POLL_INTERVAL))
           # Workflow name must match repo workflow name exactly.
-          sleep "$START_POLL_INTERVAL"
           for ((i=1; i<=START_MAX_ATTEMPTS; i++)); do
             echo "Waiting for Publish Repo to start (attempt ${i}/${START_MAX_ATTEMPTS})..."
             RUN_IDS=$(gh run list -R structured-world/repo -w "$PUBLISH_WORKFLOW_NAME" --json databaseId,createdAt,event,displayTitle \
