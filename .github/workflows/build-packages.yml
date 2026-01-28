@@ -307,7 +307,13 @@ jobs:
           fi
 
           keyfile="$(mktemp)"
-          cleanup_keyfile() { rm -f "$keyfile"; }
+          cleanup_keyfile() {
+            if command -v shred >/dev/null 2>&1; then
+              shred -u "$keyfile"
+            else
+              rm -f "$keyfile"
+            fi
+          }
           trap cleanup_keyfile EXIT
           chmod 600 "$keyfile"
           printf '%s\n' "$GPG_PRIVATE_KEY" > "$keyfile"
@@ -473,7 +479,13 @@ jobs:
             exit 1
           fi
           keyfile="$(mktemp)"
-          cleanup_keyfile() { rm -f "$keyfile"; }
+          cleanup_keyfile() {
+            if command -v shred >/dev/null 2>&1; then
+              shred -u "$keyfile"
+            else
+              rm -f "$keyfile"
+            fi
+          }
           trap cleanup_keyfile EXIT
           chmod 600 "$keyfile"
           printf '%s\n' "$GPG_PRIVATE_KEY" > "$keyfile"
@@ -576,14 +588,15 @@ EOF
           START_POLL_INTERVAL=10
           START_MAX_ATTEMPTS=$((START_TIMEOUT_SECONDS / START_POLL_INTERVAL))
           # Workflow name must match repo workflow name exactly.
+          sleep "$START_POLL_INTERVAL"
           for ((i=1; i<=START_MAX_ATTEMPTS; i++)); do
             echo "Waiting for Publish Repo to start (attempt ${i}/${START_MAX_ATTEMPTS})..."
             RUN_IDS=$(gh run list -R structured-world/repo -w "$PUBLISH_WORKFLOW_NAME" --json databaseId,createdAt,event,displayTitle \
-              --jq ".[] | select(.event == \"workflow_dispatch\" and .displayTitle == \"${RUN_MATCH}\") | .databaseId") || {
+              --jq "[.[] | select(.event == \"workflow_dispatch\" and .displayTitle == \"${RUN_MATCH}\") | {id: .databaseId, createdAt: .createdAt}] | sort_by(.createdAt) | reverse | .[0].id // empty") || {
               echo "Error: gh run list failed while waiting for Publish Repo workflow" >&2
               exit 1
             }
-            RUN_ID=$(printf '%s\n' "$RUN_IDS" | head -n1)
+            RUN_ID=$(printf '%s\n' "$RUN_IDS")
             if [ -n "$RUN_ID" ]; then
               echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
               exit 0
