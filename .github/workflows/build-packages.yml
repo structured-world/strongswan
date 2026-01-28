@@ -139,7 +139,9 @@ jobs:
             bison \
             dpkg-dev \
             fakeroot \
-            debhelper
+            debhelper \
+            dpkg-sig \
+            gnupg
 
       - name: Build strongSwan
         run: |
@@ -288,6 +290,13 @@ jobs:
 
           ls -la *.deb
 
+      - name: Sign DEB packages
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+          dpkg-sig --sign builder -k "packages@sw.foundation" *.deb
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -347,7 +356,9 @@ jobs:
             flex \
             bison \
             rpm-build \
-            rpmdevtools
+            rpmdevtools \
+            rpm-sign \
+            gnupg2
 
           # Fedora 41+ moved deprecated OpenSSL ENGINE API to separate package
           if [ "${{ matrix.fedora }}" -ge 41 ]; then
@@ -418,6 +429,19 @@ jobs:
           ls -la rpms/
           echo "=== Source RPMs ==="
           ls -la srpms/
+
+      - name: Sign RPM packages
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+          cat > ~/.rpmmacros << 'EOF'
+          %_signature gpg
+          %_gpg_name packages@sw.foundation
+          %_gpg_digest_algo sha256
+          EOF
+          rpmsign --addsign rpms/*.rpm
+          rpmsign --addsign srpms/*.rpm
 
       - name: Upload RPM artifacts
         uses: actions/upload-artifact@v4
