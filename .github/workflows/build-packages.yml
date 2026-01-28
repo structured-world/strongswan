@@ -312,7 +312,7 @@ jobs:
           chmod 600 "$keyfile"
           printf '%s\n' "$GPG_PRIVATE_KEY" > "$keyfile"
 
-          if ! import_output="$(gpg --batch --with-colons --import-options import-show --import "$keyfile" 2>/dev/null)"; then
+          if ! import_output="$(gpg --batch --with-colons --import-options import-show --import "$keyfile")"; then
             echo "Failed to import GPG private key; aborting DEB signing." >&2
             exit 1
           fi
@@ -479,7 +479,7 @@ jobs:
           chmod 600 "$keyfile"
           printf '%s\n' "$GPG_PRIVATE_KEY" > "$keyfile"
 
-          if ! import_output="$(gpg --batch --with-colons --import-options import-show --import "$keyfile" 2>/dev/null)"; then
+          if ! import_output="$(gpg --batch --with-colons --import-options import-show --import "$keyfile")"; then
             echo "Failed to import GPG private key; aborting RPM signing." >&2
             exit 1
           fi
@@ -554,9 +554,12 @@ EOF
             contents: read
 
       - name: Trigger repo publish workflow
+        id: trigger-repo
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
+          START_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "start_time=$START_TIME" >> $GITHUB_OUTPUT
           # publish.yml expects workflow_dispatch input: strongswan_run_id
           if ! gh workflow run publish.yml \
             -R structured-world/repo \
@@ -570,10 +573,15 @@ EOF
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          START_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          START_TIME="${{ steps.trigger-repo.outputs.start_time }}"
+          if [ -z "$START_TIME" ]; then
+            echo "Error: missing publish start time" >&2
+            exit 1
+          fi
+          # Keep these in sync with structured-world/repo/.github/workflows/publish.yml
           PUBLISH_WORKFLOW_NAME="Publish Repo"
           RUN_MATCH="Publish Repo (strongswan ${{ github.run_id }})"
-          START_TIMEOUT_SECONDS=600
+          START_TIMEOUT_SECONDS=600 # 10 minutes
           START_POLL_INTERVAL=10
           START_MAX_ATTEMPTS=$((START_TIMEOUT_SECONDS / START_POLL_INTERVAL))
           # Workflow name must match repo workflow name exactly.
@@ -628,7 +636,7 @@ EOF
             echo "Error: missing publish run id" >&2
             exit 1
           fi
-          COMPLETE_TIMEOUT_SECONDS=1200
+          COMPLETE_TIMEOUT_SECONDS=1200 # 20 minutes
           COMPLETE_POLL_INTERVAL=10
           COMPLETE_MAX_ATTEMPTS=$((COMPLETE_TIMEOUT_SECONDS / COMPLETE_POLL_INTERVAL))
           for ((i=1; i<=COMPLETE_MAX_ATTEMPTS; i++)); do
