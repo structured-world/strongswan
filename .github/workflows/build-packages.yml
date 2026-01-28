@@ -329,7 +329,6 @@ jobs:
 
           dpkg-sig --sign builder -k "$GPG_KEY_FPR" "${deb_files[@]}"
           dpkg-sig --verify "${deb_files[@]}"
-          cleanup_keyfile
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -514,7 +513,6 @@ EOF
           if [ ${#srpm_files[@]} -gt 0 ]; then
             rpmsign --addsign "${srpm_files[@]}"
           fi
-          cleanup_keyfile
 
       - name: Upload RPM artifacts
         uses: actions/upload-artifact@v4
@@ -559,11 +557,11 @@ EOF
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           START_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          echo "start_time=$START_TIME" >> $GITHUB_OUTPUT
+          echo "start_time=$START_TIME" >> "$GITHUB_OUTPUT"
           # publish.yml expects workflow_dispatch input: strongswan_run_id
           if ! gh workflow run publish.yml \
             -R structured-world/repo \
-            -f strongswan_run_id=${{ github.run_id }}; then
+            -f "strongswan_run_id=${{ github.run_id }}"; then
             echo "Error: failed to trigger publish.yml in structured-world/repo" >&2
             exit 1
           fi
@@ -594,10 +592,10 @@ EOF
             }
             RUN_ID=$(printf '%s\n' "$RUN_IDS" | head -n1)
             if [ -n "$RUN_ID" ]; then
-              echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
-              exit 0
-            fi
-            sleep 10
+            echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+            sleep "$START_POLL_INTERVAL"
           done
           echo "Error: timed out waiting for Publish Repo to start after ${START_TIMEOUT_SECONDS} seconds" >&2
           exit 1
@@ -659,7 +657,7 @@ EOF
                 ;;
               *)
                 echo "Waiting for publish workflow to complete (attempt ${i}/${COMPLETE_MAX_ATTEMPTS}, status: $STATUS)"
-                sleep 10
+                sleep "$COMPLETE_POLL_INTERVAL"
                 ;;
             esac
           done
