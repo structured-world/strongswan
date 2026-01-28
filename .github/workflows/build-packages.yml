@@ -307,7 +307,8 @@ jobs:
           fi
 
           keyfile="$(mktemp)"
-          trap 'rm -f "$keyfile"' EXIT
+          cleanup_keyfile() { rm -f "$keyfile"; }
+          trap cleanup_keyfile EXIT
           chmod 600 "$keyfile"
           printf '%s\n' "$GPG_PRIVATE_KEY" > "$keyfile"
 
@@ -328,6 +329,7 @@ jobs:
 
           dpkg-sig --sign builder -k "$GPG_KEY_FPR" "${deb_files[@]}"
           dpkg-sig --verify "${deb_files[@]}"
+          cleanup_keyfile
           trap - EXIT
 
       - name: Upload artifacts
@@ -473,7 +475,8 @@ jobs:
             exit 1
           fi
           keyfile="$(mktemp)"
-          trap 'rm -f "$keyfile"' EXIT
+          cleanup_keyfile() { rm -f "$keyfile"; }
+          trap cleanup_keyfile EXIT
           chmod 600 "$keyfile"
           printf '%s\n' "$GPG_PRIVATE_KEY" > "$keyfile"
 
@@ -512,6 +515,7 @@ jobs:
           if [ ${#srpm_files[@]} -gt 0 ]; then
             rpmsign --addsign "${srpm_files[@]}"
           fi
+          cleanup_keyfile
           trap - EXIT
 
       - name: Upload RPM artifacts
@@ -575,7 +579,7 @@ jobs:
           START_MAX_ATTEMPTS=$((START_TIMEOUT_SECONDS / START_POLL_INTERVAL))
           # Workflow name must match repo workflow name exactly.
           for ((i=1; i<=START_MAX_ATTEMPTS; i++)); do
-            echo "Waiting for Publish Repo to start (attempt ${i}/${START_MAX_ATTEMPTS})..."
+            echo "Waiting for Publish Repo to start (attempt ${i}/${START_MAX_ATTEMPTS}, started ${START_TIME})..."
             RUN_IDS=$(gh run list -R structured-world/repo -w "Publish Repo" --json databaseId,createdAt,event,displayTitle \
               --jq ".[] | select(.event == \"workflow_dispatch\" and (.displayTitle | contains(\"$RUN_MATCH\"))) | .databaseId") || {
               echo "Error: gh run list failed while waiting for Publish Repo workflow" >&2
@@ -606,9 +610,10 @@ jobs:
           app-id: ${{ secrets.RELEASER_APP_ID }}
           private-key: ${{ secrets.RELEASER_APP_PRIVATE_KEY }}
           owner: structured-world
-          repositories: strongswan
+          repositories: strongswan,repo
           permissions:
             contents: write
+            actions: read
 
       - name: Checkout
         uses: actions/checkout@v4
