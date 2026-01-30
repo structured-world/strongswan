@@ -139,7 +139,9 @@ jobs:
             bison \
             dpkg-dev \
             fakeroot \
-            debhelper
+            debhelper \
+            dpkg-sig \
+            gnupg
 
       - name: Build strongSwan
         run: |
@@ -288,6 +290,54 @@ jobs:
 
           ls -la *.deb
 
+      - name: Sign DEB packages
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GPG_PRIVATE_KEY:-}" ]; then
+            echo "GPG_PRIVATE_KEY is not set; cannot sign DEB packages." >&2
+            exit 1
+          fi
+          shopt -s nullglob
+          deb_files=( *.deb )
+          if [ ${#deb_files[@]} -eq 0 ]; then
+            echo "Error: No .deb packages found to sign." >&2
+            exit 1
+          fi
+
+          setup_gpg_signing() {
+            local keyfile import_output
+            keyfile="$(mktemp)"
+            cleanup_keyfile() {
+              if command -v shred >/dev/null 2>&1; then
+                shred -u "$keyfile"
+              else
+                rm -f "$keyfile"
+              fi
+            }
+            trap cleanup_keyfile EXIT
+            chmod 600 "$keyfile"
+            printf '%s\n' "$GPG_PRIVATE_KEY" > "$keyfile"
+            if ! import_output="$(gpg --batch --with-colons --import-options import-show --import "$keyfile")"; then
+              echo "Failed to import GPG private key; aborting package signing." >&2
+              exit 1
+            fi
+            GPG_KEY_FPR="$(printf '%s\n' "$import_output" | awk -F: '/^fpr:/ {print $10; exit}')"
+            if [ -z "${GPG_KEY_FPR:-}" ]; then
+              echo "Error: Failed to determine GPG key fingerprint for signing." >&2
+              exit 1
+            fi
+            if ! gpg --batch --with-colons --list-keys "$GPG_KEY_FPR" | grep -q '^fpr:'; then
+              echo "Expected GPG key fingerprint not found in keyring" >&2
+              exit 1
+            fi
+          }
+          setup_gpg_signing
+
+          dpkg-sig --sign builder -k "$GPG_KEY_FPR" "${deb_files[@]}"
+          dpkg-sig --verify "${deb_files[@]}"
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -347,7 +397,9 @@ jobs:
             flex \
             bison \
             rpm-build \
-            rpmdevtools
+            rpmdevtools \
+            rpm-sign \
+            gnupg2
 
           # Fedora 41+ moved deprecated OpenSSL ENGINE API to separate package
           if [ "${{ matrix.fedora }}" -ge 41 ]; then
@@ -419,6 +471,73 @@ jobs:
           echo "=== Source RPMs ==="
           ls -la srpms/
 
+      - name: Sign RPM packages
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GPG_PRIVATE_KEY:-}" ]; then
+            echo "GPG_PRIVATE_KEY is not set; cannot sign RPM packages." >&2
+            exit 1
+          fi
+          setup_gpg_signing() {
+            local keyfile import_output
+            keyfile="$(mktemp)"
+            cleanup_keyfile() {
+              if command -v shred >/dev/null 2>&1; then
+                shred -u "$keyfile"
+              else
+                rm -f "$keyfile"
+              fi
+            }
+            trap cleanup_keyfile EXIT
+            chmod 600 "$keyfile"
+            printf '%s\n' "$GPG_PRIVATE_KEY" > "$keyfile"
+            if ! import_output="$(gpg --batch --with-colons --import-options import-show --import "$keyfile")"; then
+              echo "Failed to import GPG private key; aborting RPM signing." >&2
+              exit 1
+            fi
+            GPG_KEY_FPR="$(printf '%s\n' "$import_output" | awk -F: '/^fpr:/ {print $10; exit}')"
+            if [ -z "${GPG_KEY_FPR:-}" ]; then
+              echo "Error: Failed to determine GPG key fingerprint for RPM signing." >&2
+              exit 1
+            fi
+            if ! gpg --batch --with-colons --list-keys "$GPG_KEY_FPR" | grep -q '^fpr:'; then
+              echo "Expected GPG key fingerprint not found in keyring" >&2
+              exit 1
+            fi
+          }
+          setup_gpg_signing
+
+          rm -f ~/.rpmmacros
+          cat > ~/.rpmmacros << EOF
+%_signature gpg
+%_gpg_name ${GPG_KEY_FPR}
+%_gpg_digest_algo sha256
+EOF
+
+          shopt -s nullglob
+          rpm_files=(rpms/*.rpm)
+          srpm_files=(srpms/*.rpm)
+          if [ ${#rpm_files[@]} -eq 0 ] && [ ${#srpm_files[@]} -eq 0 ]; then
+            echo "Error: No RPM packages found in rpms/ or srpms/; cannot sign." >&2
+            exit 1
+          fi
+          if [ ${#rpm_files[@]} -gt 0 ]; then
+            rpmsign --addsign "${rpm_files[@]}"
+          fi
+          if [ ${#srpm_files[@]} -gt 0 ]; then
+            rpmsign --addsign "${srpm_files[@]}"
+          fi
+          if [ ${#rpm_files[@]} -gt 0 ] && ! rpm --checksig "${rpm_files[@]}"; then
+            echo "Error: Failed to verify RPM signatures" >&2
+            exit 1
+          fi
+          if [ ${#srpm_files[@]} -gt 0 ] && ! rpm --checksig "${srpm_files[@]}"; then
+            echo "Error: Failed to verify SRPM signatures" >&2
+            exit 1
+          fi
+
       - name: Upload RPM artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -437,222 +556,134 @@ jobs:
           path: "srpms/*.rpm"
           retention-days: 7
 
-  publish:
+  trigger-repo:
     needs: [prepare, build-deb, build-rpm]
     runs-on: ubuntu-latest
+    outputs:
+      publish_run_id: ${{ steps.wait-publish.outputs.run_id }}
 
     steps:
-      - name: Download all DEB artifacts
-        uses: actions/download-artifact@v4
+      - name: Generate release bot token
+        uses: actions/create-github-app-token@v2
+        id: app-token
         with:
-          path: packages/deb
-          pattern: deb-*
-          merge-multiple: true
+          app-id: ${{ secrets.RELEASER_APP_ID }}
+          private-key: ${{ secrets.RELEASER_APP_PRIVATE_KEY }}
+          owner: structured-world
+          repositories: repo
+          permissions:
+            actions: write
+            contents: read
 
-      - name: Download all RPM artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: packages/rpm
-          pattern: rpm-*
-          merge-multiple: true
-
-      - name: Download SRPM artifact
-        # continue-on-error: SRPM is only uploaded from fc42; if that build fails, skip SRPM
-        continue-on-error: true
-        id: download-srpm
-        uses: actions/download-artifact@v4
-        with:
-          path: packages/srpm
-          name: srpm
-
-      - name: List packages
-        run: |
-          echo "=== DEB packages ==="
-          ls -la packages/deb/
-          echo "=== RPM packages ==="
-          ls -la packages/rpm/
-          echo "=== SRPM packages ==="
-          ls -la packages/srpm/ 2>/dev/null || echo "No SRPM packages (fc42 build may have failed)"
-
-      - name: Clone repository
-        uses: actions/checkout@v4
-        with:
-          repository: structured-world/repo
-          token: ${{ secrets.REPO_TOKEN }}
-          path: repo
-
-      - name: Install tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y apt-utils createrepo-c gnupg
-
-      - name: Import GPG key
+      - name: Trigger repo publish workflow
+        id: trigger-repo
         env:
-          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --batch --import
-          # Test signing (validates key import, passphrase optional)
-          if [ -n "$GPG_PASSPHRASE" ]; then
-            echo "$GPG_PASSPHRASE" | gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 --sign --armor /dev/null || true
+          # publish.yml expects workflow_dispatch input: strongswan_run_id
+          if ! gh workflow run publish.yml \
+            -R structured-world/repo \
+            -f "strongswan_run_id=${{ github.run_id }}"; then
+            echo "Error: failed to trigger publish.yml in structured-world/repo" >&2
+            exit 1
           fi
 
-      - name: Publish DEB packages
+      - name: Wait for publish workflow to start
+        id: wait-publish
         env:
-          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          VERSION="${{ needs.prepare.outputs.version }}"
-
-          cd repo
-
-          # Copy DEB packages to pool
-          for deb in ../packages/deb/*.deb; do
-            PKGNAME=$(dpkg-deb -f "$deb" Package)
-            FIRST_LETTER="${PKGNAME:0:1}"
-            POOL_DIR="deb/pool/main/${FIRST_LETTER}/${PKGNAME}"
-            mkdir -p "$POOL_DIR"
-            cp "$deb" "$POOL_DIR/"
-            echo "Copied $deb to $POOL_DIR/"
+          # Keep these in sync with structured-world/repo/.github/workflows/publish.yml
+          PUBLISH_WORKFLOW_NAME="Publish Repo"
+          RUN_MATCH="Publish Repo (strongswan ${{ github.run_id }})"
+          START_TIMEOUT_SECONDS=600 # 10 minutes
+          START_POLL_INTERVAL=10
+          START_MAX_ATTEMPTS=$((START_TIMEOUT_SECONDS / START_POLL_INTERVAL))
+          # Workflow name must match repo workflow name exactly.
+          for ((i=1; i<=START_MAX_ATTEMPTS; i++)); do
+            echo "Waiting for Publish Repo to start (attempt ${i}/${START_MAX_ATTEMPTS})..."
+            RUN_IDS=$(gh run list -R structured-world/repo -w "$PUBLISH_WORKFLOW_NAME" --json databaseId,createdAt,event,displayTitle \
+              --jq "[.[] | select(.event == \"workflow_dispatch\" and .displayTitle == \"${RUN_MATCH}\") | {id: .databaseId, createdAt: .createdAt}] | sort_by(.createdAt) | reverse | .[0].id // empty") || {
+              echo "Error: gh run list failed while waiting for Publish Repo workflow" >&2
+              exit 1
+            }
+            RUN_ID=$(printf '%s\n' "$RUN_IDS")
+            if [ -n "$RUN_ID" ]; then
+              echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep "$START_POLL_INTERVAL"
           done
-
-          # GPG signing helper
-          gpg_sign() {
-            if [ -n "$GPG_PASSPHRASE" ]; then
-              gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" "$@"
-            else
-              gpg --batch --yes "$@"
-            fi
-          }
-
-          # Update Packages index for each distribution
-          for dist in jammy noble bookworm; do
-            DIST_DIR="deb/dists/${dist}"
-            mkdir -p "${DIST_DIR}/main/binary-amd64"
-
-            # Generate Packages file
-            apt-ftparchive packages "deb/pool/main" | \
-              grep -A 1000 "Filename: .*_${dist}_" > "${DIST_DIR}/main/binary-amd64/Packages" || true
-
-            # If no dist-specific packages, generate from all
-            if [ ! -s "${DIST_DIR}/main/binary-amd64/Packages" ]; then
-              apt-ftparchive packages "deb/pool/main" > "${DIST_DIR}/main/binary-amd64/Packages"
-            fi
-
-            gzip -kf "${DIST_DIR}/main/binary-amd64/Packages"
-
-            # Generate Release file
-            cat > "${DIST_DIR}/Release" << EOF
-          Origin: SW Foundation
-          Label: SW Foundation
-          Suite: ${dist}
-          Codename: ${dist}
-          Architectures: amd64
-          Components: main
-          Description: SW Foundation Package Repository
-          EOF
-
-            # Add checksums
-            apt-ftparchive release "${DIST_DIR}" >> "${DIST_DIR}/Release"
-
-            # Sign Release file
-            gpg_sign --armor --detach-sign -o "${DIST_DIR}/Release.gpg" "${DIST_DIR}/Release"
-            gpg_sign --clearsign -o "${DIST_DIR}/InRelease" "${DIST_DIR}/Release"
-
-            echo "Updated ${dist} repository"
-          done
-
-      - name: Publish RPM packages
-        env:
-          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-        run: |
-          cd repo
-
-          # GPG signing helper
-          gpg_sign() {
-            if [ -n "$GPG_PASSPHRASE" ]; then
-              gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" "$@"
-            else
-              gpg --batch --yes "$@"
-            fi
-          }
-
-          # Copy RPM packages to appropriate Fedora directories
-          for rpm in ../packages/rpm/*.rpm; do
-            FILENAME=$(basename "$rpm")
-            # Extract fc version from filename (e.g., strongswan-sw-6.0.4.sw.2-1.fc40.x86_64.rpm)
-            if [[ "$FILENAME" =~ \.fc([0-9]+)\. ]]; then
-              FC_VER="${BASH_REMATCH[1]}"
-              DEST_DIR="rpm/fc${FC_VER}"
-              mkdir -p "$DEST_DIR"
-              cp "$rpm" "$DEST_DIR/"
-              echo "Copied $rpm to $DEST_DIR/"
-            fi
-          done
-
-          # Copy SRPM packages to a single distro-agnostic directory
-          # (SRPMs are source packages and can be rebuilt for any distro)
-          SRPM_DIR="rpm/SRPMS"
-          mkdir -p "$SRPM_DIR"
-          if ls ../packages/srpm/*.rpm 1>/dev/null 2>&1; then
-            for srpm in ../packages/srpm/*.rpm; do
-              cp "$srpm" "$SRPM_DIR/"
-              echo "Copied $srpm to $SRPM_DIR/"
-            done
-
-            # Create SRPM repository metadata
-            createrepo_c --update "$SRPM_DIR"
-            gpg_sign --armor --detach-sign -o "${SRPM_DIR}/repodata/repomd.xml.asc" \
-              "${SRPM_DIR}/repodata/repomd.xml"
-            echo "Updated SRPM repository"
-          else
-            echo "No SRPM packages found to copy"
-          fi
-
-          # Update repository metadata for each Fedora version
-          for fc in 39 40 41 42; do
-            FC_DIR="rpm/fc${fc}"
-            if [ -d "$FC_DIR" ] && ls "$FC_DIR"/*.rpm 1>/dev/null 2>&1; then
-              createrepo_c --update "$FC_DIR"
-
-              # Sign repomd.xml
-              gpg_sign --armor --detach-sign -o "${FC_DIR}/repodata/repomd.xml.asc" \
-                "${FC_DIR}/repodata/repomd.xml"
-
-              echo "Updated fc${fc} repository"
-            fi
-          done
-
-      - name: Commit and push
-        run: |
-          cd repo
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          git add -A
-          git status
-
-          VERSION="${{ needs.prepare.outputs.version }}"
-          if git diff --staged --quiet; then
-            echo "No changes to commit"
-          else
-            git commit -m "Release strongSwan SW ${VERSION}"
-            git push
-            echo "Pushed release ${VERSION} to repository"
-          fi
+          echo "Error: timed out waiting for Publish Repo to start after ${START_TIMEOUT_SECONDS} seconds" >&2
+          exit 1
 
   # Create GitHub Release in the fork (no artifacts, just links to package repo)
   release:
-    needs: [prepare, publish]
+    needs: [prepare, trigger-repo]
     runs-on: ubuntu-latest
     permissions:
       contents: write
 
     steps:
+      - name: Generate release bot token
+        uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ secrets.RELEASER_APP_ID }}
+          private-key: ${{ secrets.RELEASER_APP_PRIVATE_KEY }}
+          owner: structured-world
+          repositories: strongswan,repo
+          permissions:
+            contents: write
+            actions: read
+
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Wait for publish workflow to complete
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          RUN_ID="${{ needs.trigger-repo.outputs.publish_run_id }}"
+          if [ -z "$RUN_ID" ]; then
+            echo "Error: missing publish run id" >&2
+            exit 1
+          fi
+          COMPLETE_TIMEOUT_SECONDS=1200 # 20 minutes
+          COMPLETE_POLL_INTERVAL=10
+          COMPLETE_MAX_ATTEMPTS=$((COMPLETE_TIMEOUT_SECONDS / COMPLETE_POLL_INTERVAL))
+          for ((i=1; i<=COMPLETE_MAX_ATTEMPTS; i++)); do
+            if ! STATUS=$(gh run view -R structured-world/repo "$RUN_ID" --json status,conclusion --jq '(.status // "unknown") + ":" + (.conclusion // "none")'); then
+              echo "Error: failed to query status for publish workflow run $RUN_ID" >&2
+              exit 1
+            fi
+            if [ -z "$STATUS" ]; then
+              echo "Error: empty status returned for publish workflow run $RUN_ID" >&2
+              exit 1
+            fi
+            case "$STATUS" in
+              completed:success)
+                echo "Publish workflow completed successfully"
+                exit 0
+                ;;
+              completed:*)
+                echo "Publish workflow failed with status $STATUS" >&2
+                exit 1
+                ;;
+              *)
+                echo "Waiting for publish workflow to complete (attempt ${i}/${COMPLETE_MAX_ATTEMPTS}, status: $STATUS)"
+                sleep "$COMPLETE_POLL_INTERVAL"
+                ;;
+            esac
+          done
+          echo "Error: timed out waiting for Publish Repo completion after ${COMPLETE_TIMEOUT_SECONDS} seconds" >&2
+          exit 1
 
       - name: Create GitHub Release
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           VERSION="${{ needs.prepare.outputs.version }}"
           UPSTREAM="${{ needs.prepare.outputs.upstream_version }}"
