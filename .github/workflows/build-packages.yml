@@ -145,7 +145,7 @@ jobs:
           # dpkg-sig is a Perl script with minimal dependencies (perl, libconfig-file-perl).
           if ! sudo apt-get install -y dpkg-sig 2>/dev/null; then
             tmpd="$(mktemp -d)"
-            if ! wget -q -P "$tmpd" https://archive.ubuntu.com/ubuntu/pool/universe/d/dpkg-sig/dpkg-sig_0.13.1+1-8_all.deb; then
+            if ! wget -q -P "$tmpd" https://archive.ubuntu.com/ubuntu/pool/universe/d/dpkg-sig/dpkg-sig_0.13.1+nmu4_all.deb; then
               rm -rf "$tmpd"
               echo "Error: failed to download dpkg-sig from Ubuntu archive" >&2
               exit 1
@@ -352,12 +352,13 @@ jobs:
           setup_gpg_signing
 
           dpkg-sig --sign builder -k "$GPG_KEY_FPR" "${deb_files[@]}"
-          # dpkg-sig --verify has known BADSIG issues with GnuPG 2.x;
-          # verify signatures exist via --list instead. Cryptographic verification
-          # happens at APT repo level (Release.gpg/InRelease in publish.yml).
+          # dpkg-sig --verify and --list have known BADSIG issues with GnuPG 2.x;
+          # verify signatures exist by checking the ar archive for the _gpgbuilder member
+          # that dpkg-sig adds during signing. Cryptographic verification happens at
+          # APT repo level (Release.gpg/InRelease in publish.yml).
           for deb in "${deb_files[@]}"; do
-            if ! dpkg-sig --list "$deb" | grep -q '_gpgbuilder'; then
-              echo "Error: signature not found in $deb after signing" >&2
+            if ! ar t "$deb" | grep -q '^_gpgbuilder$'; then
+              echo "Error: GPG signature member not found in $deb after signing" >&2
               exit 1
             fi
           done
