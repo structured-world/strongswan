@@ -571,9 +571,8 @@ jobs:
           private-key: ${{ secrets.RELEASER_APP_PRIVATE_KEY }}
           owner: structured-world
           repositories: repo
-          permissions:
-            actions: write
-            contents: read
+          permission-actions: write
+          permission-contents: read
 
       - name: Trigger repo publish workflow
         id: trigger-repo
@@ -633,9 +632,8 @@ jobs:
           private-key: ${{ secrets.RELEASER_APP_PRIVATE_KEY }}
           owner: structured-world
           repositories: strongswan,repo
-          permissions:
-            contents: write
-            actions: read
+          permission-contents: write
+          permission-actions: read
 
       - name: Checkout
         uses: actions/checkout@v4
