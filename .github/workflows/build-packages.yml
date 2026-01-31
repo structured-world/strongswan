@@ -140,8 +140,14 @@ jobs:
             dpkg-dev \
             fakeroot \
             debhelper \
-            dpkg-sig \
             gnupg
+          # dpkg-sig was removed from Ubuntu Noble (24.04)+; install from Jammy archive as fallback.
+          if ! sudo apt-get install -y dpkg-sig 2>/dev/null; then
+            tmpd="$(mktemp -d)"
+            wget -q -P "$tmpd" http://archive.ubuntu.com/ubuntu/pool/universe/d/dpkg-sig/dpkg-sig_0.13.1+1-8_all.deb
+            sudo apt-get install -y "$tmpd"/dpkg-sig_*.deb
+            rm -rf "$tmpd"
+          fi
 
       - name: Build strongSwan
         run: |
@@ -306,8 +312,10 @@ jobs:
             exit 1
           fi
 
+          # keyfile must NOT be local — cleanup_keyfile trap runs at EXIT,
+          # after setup_gpg_signing returns, so the variable must persist.
           setup_gpg_signing() {
-            local keyfile import_output
+            local import_output
             keyfile="$(mktemp)"
             cleanup_keyfile() {
               if command -v shred >/dev/null 2>&1; then
@@ -332,6 +340,8 @@ jobs:
               echo "Expected GPG key fingerprint not found in keyring" >&2
               exit 1
             fi
+            # Trust the imported key so dpkg-sig --verify accepts signatures.
+            printf '%s:6:\n' "$GPG_KEY_FPR" | gpg --import-ownertrust
           }
           setup_gpg_signing
 
@@ -480,8 +490,10 @@ jobs:
             echo "GPG_PRIVATE_KEY is not set; cannot sign RPM packages." >&2
             exit 1
           fi
+          # keyfile must NOT be local — cleanup_keyfile trap runs at EXIT,
+          # after setup_gpg_signing returns, so the variable must persist.
           setup_gpg_signing() {
-            local keyfile import_output
+            local import_output
             keyfile="$(mktemp)"
             cleanup_keyfile() {
               if command -v shred >/dev/null 2>&1; then
@@ -506,6 +518,16 @@ jobs:
               echo "Expected GPG key fingerprint not found in keyring" >&2
               exit 1
             fi
+            # Import public key into RPM database so rpm --checksig trusts our signatures.
+            local gpg_pubkey
+            gpg_pubkey="$(mktemp)"
+            if ! gpg --batch --armor --export "$GPG_KEY_FPR" > "$gpg_pubkey" || [ ! -s "$gpg_pubkey" ]; then
+              rm -f "$gpg_pubkey"
+              echo "Error: failed to export GPG public key for RPM database import" >&2
+              exit 1
+            fi
+            rpm --import "$gpg_pubkey"
+            rm -f "$gpg_pubkey"
           }
           setup_gpg_signing
 
