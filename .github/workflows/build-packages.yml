@@ -197,24 +197,24 @@ jobs:
 
           make DESTDIR="$(pwd)/${PKGDIR}" install
 
-          cat > "${PKGDIR}/DEBIAN/control" << EOF
-          Package: strongswan-sw
-          Version: ${VERSION}
-          Section: net
-          Priority: optional
-          Architecture: ${ARCH}
-          Depends: libgmp10, ${LIBSSL}, libcurl4, libsystemd0, libcap2, libpam0g, ${LIBLDAP}, libsqlite3-0, libgcrypt20
-          Conflicts: strongswan, strongswan-charon, strongswan-starter
-          Provides: strongswan (= ${VERSION})
-          Replaces: strongswan, strongswan-charon, strongswan-starter
-          Maintainer: Structured World Foundation <dev@sw.foundation>
-          Homepage: https://github.com/structured-world/strongswan
-          Description: strongSwan IPsec (SW fork)
-           strongSwan is a complete IPsec implementation for Linux.
-           This is the Structured World Foundation fork with socket permissions
-           fix (umask 0660 for Unix sockets). Drop-in replacement for system
-           strongswan package.
-          EOF
+          printf '%s\n' \
+            "Package: strongswan-sw" \
+            "Version: ${VERSION}" \
+            "Section: net" \
+            "Priority: optional" \
+            "Architecture: ${ARCH}" \
+            "Depends: libgmp10, ${LIBSSL}, libcurl4, libsystemd0, libcap2, libpam0g, ${LIBLDAP}, libsqlite3-0, libgcrypt20" \
+            "Conflicts: strongswan, strongswan-charon, strongswan-starter" \
+            "Provides: strongswan (= ${VERSION})" \
+            "Replaces: strongswan, strongswan-charon, strongswan-starter" \
+            "Maintainer: Structured World Foundation <dev@sw.foundation>" \
+            "Homepage: https://github.com/structured-world/strongswan" \
+            "Description: strongSwan IPsec (SW fork)" \
+            " strongSwan is a complete IPsec implementation for Linux." \
+            " This is the Structured World Foundation fork with socket permissions" \
+            " fix (umask 0660 for Unix sockets). Drop-in replacement for system" \
+            " strongswan package." \
+            > "${PKGDIR}/DEBIAN/control"
 
           fakeroot dpkg-deb --build "${PKGDIR}"
 
@@ -235,20 +235,20 @@ jobs:
           cp -a "$PGSQL_SO" "${PGSQL_PKGDIR}/usr/lib/ipsec/plugins/"
           rm -f "$PGSQL_SO"
 
-          cat > "${PGSQL_PKGDIR}/DEBIAN/control" << EOF
-          Package: strongswan-pgsql
-          Version: ${VERSION}
-          Section: net
-          Priority: optional
-          Architecture: ${ARCH}
-          Depends: strongswan (>= 6.0) | strongswan-sw, libpq5
-          Maintainer: Structured World Foundation <dev@sw.foundation>
-          Homepage: https://github.com/structured-world/strongswan
-          Description: PostgreSQL plugin for strongSwan
-           PostgreSQL database backend for strongSwan SQL plugin.
-           Enables storing VPN user credentials and configuration in PostgreSQL.
-           Works with system strongswan (>= 6.0) or strongswan-sw.
-          EOF
+          printf '%s\n' \
+            "Package: strongswan-pgsql" \
+            "Version: ${VERSION}" \
+            "Section: net" \
+            "Priority: optional" \
+            "Architecture: ${ARCH}" \
+            "Depends: strongswan (>= 6.0) | strongswan-sw, libpq5" \
+            "Maintainer: Structured World Foundation <dev@sw.foundation>" \
+            "Homepage: https://github.com/structured-world/strongswan" \
+            "Description: PostgreSQL plugin for strongSwan" \
+            " PostgreSQL database backend for strongSwan SQL plugin." \
+            " Enables storing VPN user credentials and configuration in PostgreSQL." \
+            " Works with system strongswan (>= 6.0) or strongswan-sw." \
+            > "${PGSQL_PKGDIR}/DEBIAN/control"
 
           fakeroot dpkg-deb --build "${PGSQL_PKGDIR}"
 
@@ -269,20 +269,20 @@ jobs:
             find "${PKGDIR}" -name "*.so" -path "*/plugins/*" | head -20
           fi
 
-          cat > "${DHCP_INFORM_PKGDIR}/DEBIAN/control" << EOF
-          Package: strongswan-dhcp-inform
-          Version: ${VERSION}
-          Section: net
-          Priority: optional
-          Architecture: ${ARCH}
-          Depends: strongswan (>= 6.0) | strongswan-sw, strongswan-pgsql
-          Maintainer: Structured World Foundation <dev@sw.foundation>
-          Homepage: https://github.com/structured-world/strongswan
-          Description: DHCP INFORM responder plugin for strongSwan
-           Responds to Windows DHCPINFORM requests with split-tunnel routes
-           from PostgreSQL database. Delivers routes via DHCP option 121/249.
-           Works with system strongswan (>= 6.0) or strongswan-sw.
-          EOF
+          printf '%s\n' \
+            "Package: strongswan-dhcp-inform" \
+            "Version: ${VERSION}" \
+            "Section: net" \
+            "Priority: optional" \
+            "Architecture: ${ARCH}" \
+            "Depends: strongswan (>= 6.0) | strongswan-sw, strongswan-pgsql" \
+            "Maintainer: Structured World Foundation <dev@sw.foundation>" \
+            "Homepage: https://github.com/structured-world/strongswan" \
+            "Description: DHCP INFORM responder plugin for strongSwan" \
+            " Responds to Windows DHCPINFORM requests with split-tunnel routes" \
+            " from PostgreSQL database. Delivers routes via DHCP option 121/249." \
+            " Works with system strongswan (>= 6.0) or strongswan-sw." \
+            > "${DHCP_INFORM_PKGDIR}/DEBIAN/control"
 
           if [ -n "$DHCP_INFORM_SO" ]; then
             fakeroot dpkg-deb --build "${DHCP_INFORM_PKGDIR}"
@@ -510,11 +510,11 @@ jobs:
           setup_gpg_signing
 
           rm -f ~/.rpmmacros
-          cat > ~/.rpmmacros << EOF
-%_signature gpg
-%_gpg_name ${GPG_KEY_FPR}
-%_gpg_digest_algo sha256
-EOF
+          printf '%s\n' \
+            '%_signature gpg' \
+            "%_gpg_name ${GPG_KEY_FPR}" \
+            '%_gpg_digest_algo sha256' \
+            > ~/.rpmmacros
 
           shopt -s nullglob
           rpm_files=(rpms/*.rpm)
@@ -689,21 +689,21 @@ EOF
           UPSTREAM="${{ needs.prepare.outputs.upstream_version }}"
 
           # Create release notes (using {{PLACEHOLDER}} pattern for clarity)
-          cat > release-notes.md << 'EOF'
-          ## strongSwan SW {{VERSION}}
-
-          Based on upstream strongSwan {{UPSTREAM}} with the following SW fork modifications:
-
-          ### Changes
-
-          - **PostgreSQL database plugin** - SQL-based authentication and authorization
-          - **Unix socket permissions fix** - Proper umask (0660) for VICI socket
-          - **DHCP-inform plugin** - Windows split-tunnel routes via DHCP option 121/249
-
-          ### Installation
-
-          See the [website](https://structured-world.github.io/strongswan/) for installation instructions.
-          EOF
+          printf '%s\n' \
+            '## strongSwan SW {{VERSION}}' \
+            '' \
+            'Based on upstream strongSwan {{UPSTREAM}} with the following SW fork modifications:' \
+            '' \
+            '### Changes' \
+            '' \
+            '- **PostgreSQL database plugin** - SQL-based authentication and authorization' \
+            '- **Unix socket permissions fix** - Proper umask (0660) for VICI socket' \
+            '- **DHCP-inform plugin** - Windows split-tunnel routes via DHCP option 121/249' \
+            '' \
+            '### Installation' \
+            '' \
+            'See the [website](https://structured-world.github.io/strongswan/) for installation instructions.' \
+            > release-notes.md
 
           # Substitute placeholders in release notes
           sed -i "s/{{VERSION}}/${VERSION}/g" release-notes.md
