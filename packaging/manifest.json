@@ -1,0 +1,82 @@
+{
+  "project": {
+    "id": "strongswan",
+    "name": "strongSwan SW",
+    "description": "Enterprise-grade strongSwan VPN packages with PostgreSQL database support. Production-ready builds for modern Linux distributions.",
+    "homepage": "https://github.com/structured-world/strongswan",
+    "license": "GPL-2.0-or-later",
+    "upstream": "https://www.strongswan.org/",
+    "upstreamDocs": "https://docs.strongswan.org/",
+    "issueTracker": "https://github.com/structured-world/strongswan/issues",
+    "releases": "https://github.com/structured-world/strongswan/releases",
+    "trademarkNotice": "strongSwan is a registered trademark of Andreas Steffen and the strongSwan project. This is an independent distribution not affiliated with or endorsed by the strongSwan project.",
+    "sourceNotice": "Complete source code is available at github.com/structured-world/strongswan."
+  },
+  "packages": [
+    {
+      "name": "strongswan-sw",
+      "displayName": "strongSwan SW",
+      "summary": "Complete strongSwan VPN distribution with all standard plugins. This is the base package required for IKEv2/IPsec VPN server functionality.",
+      "category": "main",
+      "icon": "shield",
+      "requires": null
+    },
+    {
+      "name": "strongswan-pgsql",
+      "displayName": "PostgreSQL Plugin",
+      "summary": "PostgreSQL database backend for strongSwan. Enables <code>sql</code> and <code>attr-sql</code> plugins to store credentials, IP pools, and connection attributes.",
+      "category": "plugin",
+      "icon": "database",
+      "requires": "strongswan-sw",
+      "docs": "pgsql-plugin"
+    },
+    {
+      "name": "strongswan-dhcp-inform",
+      "displayName": "DHCP INFORM Plugin",
+      "summary": "Responds to Windows DHCP INFORM requests with split-tunnel routes from PostgreSQL. Delivers classless static routes via DHCP option 121/249.",
+      "category": "plugin-green",
+      "icon": "globe",
+      "requires": "strongswan-pgsql"
+    }
+  ],
+  "platforms": {
+    "rpm": {
+      "distros": [
+        {
+          "id": "fedora",
+          "name": "Fedora",
+          "versions": ["39", "40", "41", "42"],
+          "prefix": "fc",
+          "arch": "x86_64"
+        }
+      ],
+      "repoSetup": "sudo dnf config-manager --add-repo \\\n  https://repo.sw.foundation/rpm/fc$(rpm -E %fedora)/sw.repo",
+      "installCmd": "sudo dnf install"
+    },
+    "deb": {
+      "distros": [
+        {
+          "id": "ubuntu",
+          "name": "Ubuntu",
+          "codenames": ["jammy", "noble"],
+          "versions": ["22.04", "24.04"]
+        },
+        {
+          "id": "debian",
+          "name": "Debian",
+          "codenames": ["bookworm"],
+          "versions": ["12"]
+        }
+      ],
+      "repoSetup": "# Add GPG key\ncurl -fsSL https://repo.sw.foundation/keys/sw.gpg \\\n  | sudo gpg --dearmor -o /etc/apt/keyrings/sw.gpg\n\n# Add repository\necho \"deb [signed-by=/etc/apt/keyrings/sw.gpg] \\\n  https://repo.sw.foundation/deb $(lsb_release -cs) main\" \\\n  | sudo tee /etc/apt/sources.list.d/sw.list\n\nsudo apt update",
+      "installCmd": "sudo apt install"
+    }
+  },
+  "docs": [
+    {
+      "slug": "pgsql-plugin",
+      "title": "PostgreSQL Plugin Setup",
+      "file": "pgsql-plugin.md"
+    }
+  ]
+}
