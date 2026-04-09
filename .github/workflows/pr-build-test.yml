@@ -62,7 +62,7 @@ jobs:
     needs: check-reviews
     runs-on: ubuntu-latest
     container:
-      image: fedora:42
+      image: fedora:43
 
     steps:
       - name: Checkout
