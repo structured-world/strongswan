@@ -4,8 +4,15 @@ After=syslog.target network-online.target
 Wants=syslog.target network-online.target
 
 [Service]
+Type=simple
 ExecStart=@SBINDIR@/@IPSEC_SCRIPT@ start --nofork
+ExecStop=@SBINDIR@/@IPSEC_SCRIPT@ stop
+ExecReload=@SBINDIR@/@IPSEC_SCRIPT@ reload
+ExecReload=@SBINDIR@/swanctl --load-creds
+ExecStartPost=/bin/sleep 2
+ExecStartPost=@SBINDIR@/swanctl --load-creds
 Restart=on-abnormal
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
