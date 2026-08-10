@@ -92,7 +92,8 @@ jobs:
           - os: ubuntu-24.04
             dist: noble
             libssl: libssl3t64
-            libldap: libldap-2.5-0
+            # noble ships OpenLDAP 2.6 as libldap2; libldap-2.5-0 does not exist there
+            libldap: libldap2
             arch: amd64
           - os: ubuntu-22.04
             dist: jammy
@@ -107,7 +108,8 @@ jobs:
           - os: ubuntu-24.04-arm
             dist: noble
             libssl: libssl3t64
-            libldap: libldap-2.5-0
+            # noble ships OpenLDAP 2.6 as libldap2; libldap-2.5-0 does not exist there
+            libldap: libldap2
             arch: arm64
           - os: ubuntu-22.04-arm
             dist: jammy
