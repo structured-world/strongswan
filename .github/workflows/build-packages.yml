@@ -53,24 +53,18 @@ jobs:
             exit 1
           fi
 
-          # Count PR merges after upstream tag to determine SW revision number
-          # GitHub adds "(#N)" suffix on squash merge, so we count those
-          # This auto-increments: sw.1 -> sw.2 -> sw.3 on each PR merge to sw branch
-          # When upstream releases new version, we rebase and SW_REV resets to 1
-          # IMPORTANT: Repository MUST use squash merging for PRs to sw branch
-          # Manual commits or merge commits won't increment the version number
-          # Use git tag -l to check for tags only (git rev-parse would also match branches)
-          if git tag -l "${UPSTREAM_VERSION}" | grep -q .; then
-            # Tag exists - count squash merged PRs (commits with (#N) suffix)
-            # Note: This pattern matches GitHub's squash merge format; manual commits
-            # with similar suffixes are unlikely and would only inflate the version
-            SW_REV=$(git log "${UPSTREAM_VERSION}..HEAD" --oneline | grep -E -c '\(#[0-9]+\)$' || echo 0)
-            # Default to 1 if no PR merges found (minimum is sw.1)
-            [ "$SW_REV" -eq 0 ] && SW_REV=1
-          else
-            # No tag yet - use 1
-            SW_REV=1
-          fi
+          # SW revision = max N among this upstream version's own release tags
+          # (<upstream>-sw.N, created by the release job) plus one.
+          # This resets to sw.1 automatically when a new upstream version
+          # arrives (no matching release tags exist yet) and does not depend
+          # on commit subjects: counting "(#N)" merge commits after the
+          # upstream tag never reset, because a rebase carries every previous
+          # cycle's merge commits on top of the new tag.
+          ESCAPED_VERSION=$(printf '%s' "$UPSTREAM_VERSION" | sed 's/\./\\./g')
+          LAST_REV=$(git tag -l "${UPSTREAM_VERSION}-sw.*" \
+            | sed -n "s/^${ESCAPED_VERSION}-sw\.\([0-9][0-9]*\)$/\1/p" \
+            | sort -n | tail -1)
+          SW_REV=$(( ${LAST_REV:-0} + 1 ))
 
           # SW version for DEB: upstream-sw.N (dashes allowed)
           VERSION="${UPSTREAM_VERSION}-sw.${SW_REV}"
