@@ -66,11 +66,26 @@ jobs:
       rebase_success: ${{ steps.sync.outputs.rebase_success }}
 
     steps:
+      # Push master/sw with a releaser app token: upstream releases routinely
+      # change .github/workflows/*, and the default GITHUB_TOKEN has no
+      # `workflows` permission, so mirroring them is rejected by GitHub
+      # ("refusing to allow a GitHub App to create or update workflow").
+      - name: Generate release bot token
+        uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ secrets.RELEASER_APP_ID }}
+          private-key: ${{ secrets.RELEASER_APP_PRIVATE_KEY }}
+          owner: structured-world
+          repositories: strongswan
+          permission-contents: write
+          permission-workflows: write
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Configure Git
         run: |
