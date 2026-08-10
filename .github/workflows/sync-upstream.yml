@@ -108,6 +108,11 @@ jobs:
           git checkout -B master origin/master
           git reset --hard "$UPSTREAM_TAG"
           git push origin master --force
+          # Push the upstream release tag too: build-packages.yml derives the
+          # sw.N revision by counting PR merges since this tag. Without it in
+          # the fork every build computes sw.1 and publish silently drops the
+          # rebuilt packages as pool duplicates.
+          git push origin "refs/tags/${UPSTREAM_TAG}"
 
           # Rebase sw branch onto the release
           git checkout sw
