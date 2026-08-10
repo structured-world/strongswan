@@ -245,7 +245,10 @@ jobs:
             " strongswan package." \
             > "${PKGDIR}/DEBIAN/control"
 
-          fakeroot dpkg-deb --build "${PKGDIR}"
+          # NOTE: the main package is built AFTER the plugin files are moved
+          # out below — building it earlier bakes the plugin .so into
+          # strongswan-sw and dpkg refuses to co-install the plugin packages
+          # (file conflict on /usr/lib/ipsec/plugins/*.so).
 
           # PostgreSQL plugin package
           PGSQL_PKGDIR="strongswan-pgsql_${VERSION}_${DIST}_${ARCH}"
@@ -263,6 +266,17 @@ jobs:
           fi
           cp -a "$PGSQL_SO" "${PGSQL_PKGDIR}/usr/lib/ipsec/plugins/"
           rm -f "$PGSQL_SO"
+          # The libtool archive and plugin config belong to the plugin package
+          PGSQL_LA="${PGSQL_SO%.so}.la"
+          if [ -f "$PGSQL_LA" ]; then
+            cp -a "$PGSQL_LA" "${PGSQL_PKGDIR}/usr/lib/ipsec/plugins/"
+            rm -f "$PGSQL_LA"
+          fi
+          PGSQL_CONF="${PKGDIR}/etc/strongswan.d/charon/pgsql.conf"
+          if [ -f "$PGSQL_CONF" ]; then
+            cp -a "$PGSQL_CONF" "${PGSQL_PKGDIR}/etc/strongswan.d/charon/"
+            rm -f "$PGSQL_CONF"
+          fi
 
           printf '%s\n' \
             "Package: strongswan-pgsql" \
@@ -285,12 +299,24 @@ jobs:
           DHCP_INFORM_PKGDIR="strongswan-dhcp-inform_${VERSION}_${DIST}_${ARCH}"
           mkdir -p "${DHCP_INFORM_PKGDIR}/DEBIAN"
           mkdir -p "${DHCP_INFORM_PKGDIR}/usr/lib/ipsec/plugins"
+          mkdir -p "${DHCP_INFORM_PKGDIR}/etc/strongswan.d/charon"
 
           # Copy dhcp-inform plugin to separate package, remove from main package
           DHCP_INFORM_SO=$(find "${PKGDIR}" -name "libstrongswan-dhcp-inform.so" -type f | head -1)
           if [ -n "$DHCP_INFORM_SO" ]; then
             cp -a "$DHCP_INFORM_SO" "${DHCP_INFORM_PKGDIR}/usr/lib/ipsec/plugins/"
             rm -f "$DHCP_INFORM_SO"
+            # The libtool archive and plugin config belong to the plugin package
+            DHCP_INFORM_LA="${DHCP_INFORM_SO%.so}.la"
+            if [ -f "$DHCP_INFORM_LA" ]; then
+              cp -a "$DHCP_INFORM_LA" "${DHCP_INFORM_PKGDIR}/usr/lib/ipsec/plugins/"
+              rm -f "$DHCP_INFORM_LA"
+            fi
+            DHCP_INFORM_CONF="${PKGDIR}/etc/strongswan.d/charon/dhcp-inform.conf"
+            if [ -f "$DHCP_INFORM_CONF" ]; then
+              cp -a "$DHCP_INFORM_CONF" "${DHCP_INFORM_PKGDIR}/etc/strongswan.d/charon/"
+              rm -f "$DHCP_INFORM_CONF"
+            fi
             echo "Found dhcp-inform plugin: $DHCP_INFORM_SO"
           else
             echo "WARNING: dhcp-inform plugin not found in build output"
@@ -316,6 +342,9 @@ jobs:
           if [ -n "$DHCP_INFORM_SO" ]; then
             fakeroot dpkg-deb --build "${DHCP_INFORM_PKGDIR}"
           fi
+
+          # Build the main package now that all plugin files are split out
+          fakeroot dpkg-deb --build "${PKGDIR}"
 
           ls -la *.deb
 
