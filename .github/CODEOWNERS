@@ -4,5 +4,7 @@
 # All changes to sw-specific code require review
 /src/libstrongswan/plugins/pgsql/ @polaz
 /src/libstrongswan/database/ @polaz
+/src/libcharon/plugins/sql/ @polaz
+/src/libcharon/plugins/dhcp_inform/ @polaz
 /.github/workflows/build-packages.yml @polaz
 /.github/workflows/sync-upstream.yml @polaz
