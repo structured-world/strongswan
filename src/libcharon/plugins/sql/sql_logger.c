@@ -151,7 +151,10 @@ sql_logger_t *sql_logger_create(database_t *db)
 
 	/* REPLACE INTO and backtick quoting are MySQL/SQLite dialect; PostgreSQL
 	 * needs ON CONFLICT (on the ike_sas primary key, local_spi) and
-	 * double-quoted identifiers instead */
+	 * double-quoted identifiers instead. Like the MySQL/SQLite statements,
+	 * the upsert does not reference the optional lastuse accounting column:
+	 * the postgresql.sql reference schema refreshes it with an UPDATE
+	 * trigger, mirroring MySQL's ON UPDATE CURRENT_TIMESTAMP. */
 	if (db->get_driver(db) == DB_PGSQL)
 	{
 		this->insert_sa = "INSERT INTO ike_sas ("
