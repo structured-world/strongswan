@@ -20,4 +20,4 @@ pool_LDADD = \
 endif USE_ATTR_SQL
 
 templatesdir = $(pkgdatadir)/templates/database/sql
-dist_templates_DATA = mysql.sql sqlite.sql
+dist_templates_DATA = mysql.sql sqlite.sql postgresql.sql
