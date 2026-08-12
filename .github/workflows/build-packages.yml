@@ -271,6 +271,16 @@ jobs:
             cp -a "$PGSQL_CONF" "${PGSQL_PKGDIR}/etc/strongswan.d/charon/"
             rm -f "$PGSQL_CONF"
           fi
+          # The PostgreSQL reference schema ships with the plugin package:
+          # strongswan-pgsql also installs on stock strongswan, which does
+          # not carry this template. Moved (not copied) so the two packages
+          # never ship the same path.
+          PGSQL_SCHEMA="${PKGDIR}/usr/share/strongswan/templates/database/sql/postgresql.sql"
+          if [ -f "$PGSQL_SCHEMA" ]; then
+            mkdir -p "${PGSQL_PKGDIR}/usr/share/strongswan/templates/database/sql"
+            cp -a "$PGSQL_SCHEMA" "${PGSQL_PKGDIR}/usr/share/strongswan/templates/database/sql/"
+            rm -f "$PGSQL_SCHEMA"
+          fi
 
           printf '%s\n' \
             "Package: strongswan-pgsql" \
