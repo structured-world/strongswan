@@ -79,8 +79,10 @@ CREATE TABLE peer_configs (
   name varchar(32) NOT NULL,
   ike_version smallint NOT NULL default '2',
   ike_cfg integer NOT NULL,
-  local_id varchar(64) NOT NULL,
-  remote_id varchar(64) NOT NULL,
+  /* references identities.id; MySQL declares these varchar and relies on
+   * implicit coercion in the joins, PostgreSQL needs matching integer types */
+  local_id integer NOT NULL,
+  remote_id integer NOT NULL,
   cert_policy smallint NOT NULL default '1',
   uniqueid smallint NOT NULL default '0',
   auth_method smallint NOT NULL default '1',
@@ -192,8 +194,11 @@ CREATE TABLE pools (
   id serial PRIMARY KEY,
   name varchar(32) NOT NULL,
   start bytea NOT NULL,
+  /* END is a reserved word in PostgreSQL; pool.c quotes it for this backend */
   "end" bytea NOT NULL,
-  timeout integer NOT NULL,
+  /* Unix-time and lease-duration columns are bigint: MySQL uses unsigned int
+   * here and signed 32-bit integer overflows past 2038-01-19 */
+  timeout bigint NOT NULL,
   UNIQUE (name)
 );
 
@@ -204,8 +209,8 @@ CREATE TABLE addresses (
   pool integer NOT NULL,
   address bytea NOT NULL,
   identity integer NOT NULL DEFAULT 0,
-  acquired integer NOT NULL DEFAULT 0,
-  released integer NOT NULL DEFAULT 1
+  acquired bigint NOT NULL DEFAULT 0,
+  released bigint NOT NULL DEFAULT 1
 );
 CREATE INDEX addresses_pool ON addresses (pool);
 CREATE INDEX addresses_identity ON addresses (identity);
@@ -217,8 +222,8 @@ CREATE TABLE leases (
   id serial PRIMARY KEY,
   address integer NOT NULL,
   identity integer NOT NULL,
-  acquired integer NOT NULL,
-  released integer DEFAULT NULL
+  acquired bigint NOT NULL,
+  released bigint DEFAULT NULL
 );
 
 
