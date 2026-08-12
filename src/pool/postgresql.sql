@@ -1,7 +1,13 @@
 /* PostgreSQL reference schema for the sql, attr_sql and pool backends.
  * Mirrors mysql.sql: unsigned MySQL types map to the next wider signed
  * PostgreSQL type, varbinary/BLOB map to bytea, inline INDEX clauses become
- * named CREATE INDEX statements. */
+ * named CREATE INDEX statements.
+ *
+ * Auto-increment keys stay serial where the id is read back through the
+ * 32-bit database bindings in the C code (config, credential and pool
+ * tables; their cardinality never approaches 2^31). The append-only
+ * accounting tables logs and leases use bigserial: their ids are never
+ * read back, and row counts there are unbounded. */
 
 DROP TABLE IF EXISTS identities;
 CREATE TABLE identities (
@@ -219,7 +225,7 @@ CREATE INDEX addresses_address ON addresses (address);
 
 DROP TABLE IF EXISTS leases;
 CREATE TABLE leases (
-  id serial PRIMARY KEY,
+  id bigserial PRIMARY KEY,
   address integer NOT NULL,
   identity integer NOT NULL,
   acquired bigint NOT NULL,
@@ -276,7 +282,7 @@ CREATE TRIGGER ike_sas_lastuse BEFORE UPDATE ON ike_sas
 
 DROP TABLE IF EXISTS logs;
 CREATE TABLE logs (
-  id serial PRIMARY KEY,
+  id bigserial PRIMARY KEY,
   local_spi bytea NOT NULL,
   signal smallint NOT NULL,
   level smallint NOT NULL,
