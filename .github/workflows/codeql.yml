@@ -99,12 +99,14 @@ jobs:
         ./configure \
           --enable-pgsql \
           --enable-sql \
+          --enable-attr-sql \
           --enable-vici \
           --enable-systemd \
           --enable-openssl \
           --enable-dhcp-inform
         # Build libstrongswan, libcharon and pool (contain our changes);
-        # src/pool is built when sql or attr-sql is enabled
+        # the pool binary itself is gated on --enable-attr-sql (USE_ATTR_SQL
+        # in src/pool/Makefile.am), --enable-sql alone only ships templates
         make -C src/libstrongswan -j$(nproc)
         make -C src/libcharon -j$(nproc)
         make -C src/pool -j$(nproc)
