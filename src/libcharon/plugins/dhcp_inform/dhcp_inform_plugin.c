@@ -93,9 +93,11 @@ METHOD(plugin_t, destroy, void,
 }
 
 /*
- * Create plugin instance
+ * Create plugin instance. PLUGIN_DEFINE also emits the
+ * dhcp_inform_plugin_version symbol the plugin loader verifies before
+ * accepting a dlopen'ed plugin.
  */
-plugin_t *dhcp_inform_plugin_create()
+PLUGIN_DEFINE(dhcp_inform)
 {
 	private_dhcp_inform_plugin_t *this;
 
