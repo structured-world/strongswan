@@ -758,8 +758,10 @@ static enumerator_t *create_lease_query(char *filter, array_t **to_free)
 				DB_INT, !addr_chunk.ptr,
 					DB_BLOB, addr_chunk,
 				DB_INT, tstamp == 0, DB_UINT, tstamp, DB_UINT, tstamp,
-				DB_INT, !valid, DB_INT, time(NULL),
-				DB_INT, !expired, DB_INT, time(NULL),
+				/* bind current time unsigned like every other timestamp
+				 * operand, signed int truncates past 2038 */
+				DB_INT, !valid, DB_UINT, time(NULL),
+				DB_INT, !expired, DB_UINT, time(NULL),
 				DB_INT, !online,
 				/* union */
 				DB_INT, !(valid || expired),
