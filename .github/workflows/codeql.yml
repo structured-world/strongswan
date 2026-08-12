@@ -34,6 +34,7 @@ jobs:
               - 'src/libstrongswan/networking/streams/stream_service_unix.c'
               - 'src/libcharon/plugins/dhcp_inform/**'
               - 'src/libcharon/plugins/sql/**'
+              - 'src/pool/**'
               - 'configure.ac'
       - name: Report status
         run: |
@@ -77,6 +78,7 @@ jobs:
             - src/libstrongswan/networking/streams/stream_service_unix.c
             - src/libcharon/plugins/dhcp_inform
             - src/libcharon/plugins/sql
+            - src/pool
           query-filters:
             - exclude:
                 id: cpp/fixme-comment
