@@ -33,6 +33,8 @@ jobs:
               - 'src/libstrongswan/database/**'
               - 'src/libstrongswan/networking/streams/stream_service_unix.c'
               - 'src/libcharon/plugins/dhcp_inform/**'
+              - 'src/libcharon/plugins/sql/**'
+              - 'src/pool/**'
               - 'configure.ac'
       - name: Report status
         run: |
@@ -75,6 +77,8 @@ jobs:
             - src/libstrongswan/database
             - src/libstrongswan/networking/streams/stream_service_unix.c
             - src/libcharon/plugins/dhcp_inform
+            - src/libcharon/plugins/sql
+            - src/pool
           query-filters:
             - exclude:
                 id: cpp/fixme-comment
@@ -95,13 +99,17 @@ jobs:
         ./configure \
           --enable-pgsql \
           --enable-sql \
+          --enable-attr-sql \
           --enable-vici \
           --enable-systemd \
           --enable-openssl \
           --enable-dhcp-inform
-        # Build libstrongswan and libcharon (contain our changes)
+        # Build libstrongswan, libcharon and pool (contain our changes);
+        # the pool binary itself is gated on --enable-attr-sql (USE_ATTR_SQL
+        # in src/pool/Makefile.am), --enable-sql alone only ships templates
         make -C src/libstrongswan -j$(nproc)
         make -C src/libcharon -j$(nproc)
+        make -C src/pool -j$(nproc)
 
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@v4

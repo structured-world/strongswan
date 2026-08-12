@@ -77,8 +77,14 @@ static u_int create_pool(char *name, chunk_t start, chunk_t end, u_int timeout)
 		}
 		del(name);
 	}
+	/* END is a reserved word in PostgreSQL, the pools.end column must be
+	 * double-quoted there; other backends take it unquoted */
 	if (db->execute(db, &pool,
-			"INSERT INTO pools (name, start, end, timeout) VALUES (?, ?, ?, ?)",
+			db->get_driver(db) == DB_PGSQL ?
+				"INSERT INTO pools (name, start, \"end\", timeout) "
+				"VALUES (?, ?, ?, ?)" :
+				"INSERT INTO pools (name, start, end, timeout) "
+				"VALUES (?, ?, ?, ?)",
 			DB_TEXT, name, DB_BLOB, start, DB_BLOB, end,
 			DB_UINT, timeout) != 1)
 	{
@@ -230,7 +236,10 @@ static void status(void)
 	}
 	found = FALSE;
 
-	pool = db->query(db, "SELECT id, name, start, end, timeout FROM pools",
+	pool = db->query(db,
+					 db->get_driver(db) == DB_PGSQL ?
+						"SELECT id, name, start, \"end\", timeout FROM pools" :
+						"SELECT id, name, start, end, timeout FROM pools",
 					 DB_INT, DB_TEXT, DB_BLOB, DB_BLOB, DB_UINT);
 	if (pool)
 	{
@@ -478,7 +487,9 @@ static void add_addresses(char *pool, char *path, u_int timeout)
 	{	/* update address family if necessary */
 		addr = host_create_from_string("%any6", 0);
 		if (db->execute(db, NULL,
-					"UPDATE pools SET start = ?, end = ? WHERE id = ?",
+					db->get_driver(db) == DB_PGSQL ?
+						"UPDATE pools SET start = ?, \"end\" = ? WHERE id = ?" :
+						"UPDATE pools SET start = ?, end = ? WHERE id = ?",
 					DB_BLOB, addr->get_address(addr),
 					DB_BLOB, addr->get_address(addr), DB_UINT, pool_id) <= 0)
 		{
@@ -546,7 +557,10 @@ static void resize(char *name, host_t *end)
 
 	new_addr = end->get_address(end);
 
-	query = db->query(db, "SELECT id, end FROM pools WHERE name = ?",
+	query = db->query(db,
+					  db->get_driver(db) == DB_PGSQL ?
+						"SELECT id, \"end\" FROM pools WHERE name = ?" :
+						"SELECT id, end FROM pools WHERE name = ?",
 					  DB_TEXT, name, DB_UINT, DB_BLOB);
 	if (!query || !query->enumerate(query, &id, &old_addr))
 	{
@@ -577,7 +591,9 @@ static void resize(char *name, host_t *end)
 
 	db->transaction(db, FALSE);
 	if (db->execute(db, NULL,
-			"UPDATE pools SET end = ? WHERE name = ?",
+			db->get_driver(db) == DB_PGSQL ?
+				"UPDATE pools SET \"end\" = ? WHERE name = ?" :
+				"UPDATE pools SET end = ? WHERE name = ?",
 			DB_BLOB, new_addr, DB_TEXT, name) <= 0)
 	{
 		fprintf(stderr, "pool '%s' not found.\n", name);
@@ -742,8 +758,10 @@ static enumerator_t *create_lease_query(char *filter, array_t **to_free)
 				DB_INT, !addr_chunk.ptr,
 					DB_BLOB, addr_chunk,
 				DB_INT, tstamp == 0, DB_UINT, tstamp, DB_UINT, tstamp,
-				DB_INT, !valid, DB_INT, time(NULL),
-				DB_INT, !expired, DB_INT, time(NULL),
+				/* bind current time unsigned like every other timestamp
+				 * operand, signed int truncates past 2038 */
+				DB_INT, !valid, DB_UINT, time(NULL),
+				DB_INT, !expired, DB_UINT, time(NULL),
 				DB_INT, !online,
 				/* union */
 				DB_INT, !(valid || expired),

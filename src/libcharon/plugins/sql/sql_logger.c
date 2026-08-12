@@ -44,6 +44,16 @@ struct private_sql_logger_t {
 	int level;
 
 	/**
+	 * ike_sas upsert statement in the backend's SQL dialect
+	 */
+	char *insert_sa;
+
+	/**
+	 * logs insert statement in the backend's SQL dialect
+	 */
+	char *insert_log;
+
+	/**
 	 * avoid recursive calls by the same thread
 	 */
 	thread_value_t *recursive;
@@ -86,12 +96,7 @@ METHOD(logger_t, log_, void,
 		local_host = ike_sa->get_my_host(ike_sa);
 		remote_host = ike_sa->get_other_host(ike_sa);
 
-		this->db->execute(this->db, NULL, "REPLACE INTO ike_sas ("
-						  "local_spi, remote_spi, id, initiator, "
-						  "local_id_type, local_id_data, "
-						  "remote_id_type, remote_id_data, "
-						  "host_family, local_host_data, remote_host_data) "
-						  "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		this->db->execute(this->db, NULL, this->insert_sa,
 						  DB_BLOB, local_spi, DB_BLOB, remote_spi,
 						  DB_INT, ike_sa->get_unique_id(ike_sa),
 						  DB_INT, id->is_initiator(id),
@@ -102,9 +107,7 @@ METHOD(logger_t, log_, void,
 						  DB_INT, local_host->get_family(local_host),
 						  DB_BLOB, local_host->get_address(local_host),
 						  DB_BLOB, remote_host->get_address(remote_host));
-		this->db->execute(this->db, NULL, "INSERT INTO logs ("
-						  "local_spi, `signal`, level, msg) "
-						  "VALUES (?, ?, ?, ?)",
+		this->db->execute(this->db, NULL, this->insert_log,
 						  DB_BLOB, local_spi, DB_INT, group, DB_INT, level,
 						  DB_TEXT, message);
 	}
@@ -145,6 +148,48 @@ sql_logger_t *sql_logger_create(database_t *db)
 		.level = lib->settings->get_int(lib->settings,
 										"%s.plugins.sql.loglevel", -1, lib->ns),
 	);
+
+	/* REPLACE INTO and backtick quoting are MySQL/SQLite dialect; PostgreSQL
+	 * needs ON CONFLICT (on the ike_sas primary key, local_spi) and
+	 * double-quoted identifiers instead. Like the MySQL/SQLite statements,
+	 * the upsert does not reference the optional lastuse accounting column:
+	 * the postgresql.sql reference schema refreshes it with an UPDATE
+	 * trigger, mirroring MySQL's ON UPDATE CURRENT_TIMESTAMP. */
+	if (db->get_driver(db) == DB_PGSQL)
+	{
+		this->insert_sa = "INSERT INTO ike_sas ("
+						  "local_spi, remote_spi, id, initiator, "
+						  "local_id_type, local_id_data, "
+						  "remote_id_type, remote_id_data, "
+						  "host_family, local_host_data, remote_host_data) "
+						  "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+						  "ON CONFLICT (local_spi) DO UPDATE SET "
+						  "remote_spi = EXCLUDED.remote_spi, "
+						  "id = EXCLUDED.id, "
+						  "initiator = EXCLUDED.initiator, "
+						  "local_id_type = EXCLUDED.local_id_type, "
+						  "local_id_data = EXCLUDED.local_id_data, "
+						  "remote_id_type = EXCLUDED.remote_id_type, "
+						  "remote_id_data = EXCLUDED.remote_id_data, "
+						  "host_family = EXCLUDED.host_family, "
+						  "local_host_data = EXCLUDED.local_host_data, "
+						  "remote_host_data = EXCLUDED.remote_host_data";
+		this->insert_log = "INSERT INTO logs ("
+						   "local_spi, \"signal\", level, msg) "
+						   "VALUES (?, ?, ?, ?)";
+	}
+	else
+	{
+		this->insert_sa = "REPLACE INTO ike_sas ("
+						  "local_spi, remote_spi, id, initiator, "
+						  "local_id_type, local_id_data, "
+						  "remote_id_type, remote_id_data, "
+						  "host_family, local_host_data, remote_host_data) "
+						  "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+		this->insert_log = "INSERT INTO logs ("
+						   "local_spi, `signal`, level, msg) "
+						   "VALUES (?, ?, ?, ?)";
+	}
 
 	return &this->public;
 }

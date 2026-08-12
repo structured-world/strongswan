@@ -271,6 +271,16 @@ jobs:
             cp -a "$PGSQL_CONF" "${PGSQL_PKGDIR}/etc/strongswan.d/charon/"
             rm -f "$PGSQL_CONF"
           fi
+          # The PostgreSQL reference schema ships with the plugin package:
+          # strongswan-pgsql also installs on stock strongswan, which does
+          # not carry this template. Moved (not copied) so the two packages
+          # never ship the same path.
+          PGSQL_SCHEMA="${PKGDIR}/usr/share/strongswan/templates/database/sql/postgresql.sql"
+          if [ -f "$PGSQL_SCHEMA" ]; then
+            mkdir -p "${PGSQL_PKGDIR}/usr/share/strongswan/templates/database/sql"
+            cp -a "$PGSQL_SCHEMA" "${PGSQL_PKGDIR}/usr/share/strongswan/templates/database/sql/"
+            rm -f "$PGSQL_SCHEMA"
+          fi
 
           printf '%s\n' \
             "Package: strongswan-pgsql" \
@@ -278,13 +288,15 @@ jobs:
             "Section: net" \
             "Priority: optional" \
             "Architecture: ${ARCH}" \
-            "Depends: strongswan (>= 6.0) | strongswan-sw, libpq5" \
+            "Depends: strongswan-sw (= ${VERSION}), libpq5" \
             "Maintainer: Structured World Foundation <dev@sw.foundation>" \
             "Homepage: https://github.com/structured-world/strongswan" \
             "Description: PostgreSQL plugin for strongSwan" \
             " PostgreSQL database backend for strongSwan SQL plugin." \
             " Enables storing VPN user credentials and configuration in PostgreSQL." \
-            " Works with system strongswan (>= 6.0) or strongswan-sw." \
+            " Requires the strongswan-sw base package of the same build: the" \
+            " plugin is ABI-coupled to it, and the dialect-aware sql plugin" \
+            " that emits PostgreSQL statements ships there." \
             > "${PGSQL_PKGDIR}/DEBIAN/control"
 
           fakeroot dpkg-deb --build "${PGSQL_PKGDIR}"
@@ -324,13 +336,14 @@ jobs:
             "Section: net" \
             "Priority: optional" \
             "Architecture: ${ARCH}" \
-            "Depends: strongswan (>= 6.0) | strongswan-sw, strongswan-pgsql" \
+            "Depends: strongswan-sw (= ${VERSION}), strongswan-pgsql (= ${VERSION})" \
             "Maintainer: Structured World Foundation <dev@sw.foundation>" \
             "Homepage: https://github.com/structured-world/strongswan" \
             "Description: DHCP INFORM responder plugin for strongSwan" \
             " Responds to Windows DHCPINFORM requests with split-tunnel routes" \
             " from PostgreSQL database. Delivers routes via DHCP option 121/249." \
-            " Works with system strongswan (>= 6.0) or strongswan-sw." \
+            " Requires the strongswan-sw base package of the same build (the" \
+            " plugin is ABI-coupled to it) and strongswan-pgsql." \
             > "${DHCP_INFORM_PKGDIR}/DEBIAN/control"
 
           if [ -n "$DHCP_INFORM_SO" ]; then

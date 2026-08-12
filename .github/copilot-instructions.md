@@ -20,6 +20,16 @@ This is the **Structured World Foundation fork** of strongSwan. The `sw` branch 
    - `src/libstrongswan/database/database.h`: DB_PGSQL enum
    - `src/libstrongswan/database/database.c`: "PostgreSQL" in ENUM names
 
+4. **SQL dialect support in the sql plugin** (`src/libcharon/plugins/sql/`)
+   - `sql_logger.c`: statements selected per database driver; PostgreSQL
+     uses INSERT ... ON CONFLICT and double-quoted identifiers, MySQL/SQLite
+     keep REPLACE INTO and backtick quoting
+
+5. **PostgreSQL support in pool tooling** (`src/pool/`)
+   - `postgresql.sql`: reference schema alongside mysql.sql/sqlite.sql
+   - `pool.c`: pools.end column double-quoted for PostgreSQL (END is a
+     reserved word there); other backends keep the unquoted statements
+
 ## Upstream Code Style (IMPORTANT)
 
 strongSwan uses **mixed C89/C99 style**. The codebase is not strictly C89 — many files use C99 features. Our plugin follows patterns found in similar upstream plugins.
