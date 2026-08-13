@@ -214,6 +214,18 @@ jobs:
           LIBSSL="${{ matrix.libssl }}"
           LIBLDAP="${{ matrix.libldap }}"
 
+          # Declare every file under /etc as a conffile so dpkg preserves
+          # local changes on upgrade instead of silently overwriting them
+          # (dpkg keeps the local version and installs the new default as
+          # .dpkg-dist / prompts on conflict).
+          write_conffiles() {
+            local pkgdir="$1"
+            if [ -d "${pkgdir}/etc" ]; then
+              (cd "${pkgdir}" && find etc -type f | sed 's|^|/|' | sort) \
+                > "${pkgdir}/DEBIAN/conffiles"
+            fi
+          }
+
           # Main package
           PKGDIR="strongswan-sw_${VERSION}_${DIST}_${ARCH}"
           mkdir -p "${PKGDIR}/DEBIAN"
@@ -299,6 +311,7 @@ jobs:
             " that emits PostgreSQL statements ships there." \
             > "${PGSQL_PKGDIR}/DEBIAN/control"
 
+          write_conffiles "${PGSQL_PKGDIR}"
           fakeroot dpkg-deb --build "${PGSQL_PKGDIR}"
 
           # DHCP-Inform plugin package
@@ -347,10 +360,12 @@ jobs:
             > "${DHCP_INFORM_PKGDIR}/DEBIAN/control"
 
           if [ -n "$DHCP_INFORM_SO" ]; then
+            write_conffiles "${DHCP_INFORM_PKGDIR}"
             fakeroot dpkg-deb --build "${DHCP_INFORM_PKGDIR}"
           fi
 
           # Build the main package now that all plugin files are split out
+          write_conffiles "${PKGDIR}"
           fakeroot dpkg-deb --build "${PKGDIR}"
 
           ls -la *.deb
