@@ -43,7 +43,7 @@ typedef struct {
 	uint32_t addr;
 	/** monotonic time after which a refresh becomes due */
 	time_t expires;
-	/** a background resolution job is in flight */
+	/** the name is queued for background resolution */
 	bool resolving;
 } fqdn_entry_t;
 
@@ -68,9 +68,19 @@ struct private_dhcp_inform_db_provider_t {
 	hashtable_t *fqdn_cache;
 
 	/**
-	 * Lock for the FQDN cache
+	 * Lock for the FQDN cache and the pending queue
 	 */
 	mutex_t *mutex;
+
+	/**
+	 * FQDNs queued for background resolution, char*, owned
+	 */
+	linked_list_t *pending;
+
+	/**
+	 * The single resolver job is queued or running
+	 */
+	bool resolver_active;
 };
 
 /* Maximum CIDR string length for IPv4: "255.255.255.255/32" = 18 chars.
@@ -199,73 +209,86 @@ static bool ip_in_subnet(host_t *ip, host_t *network, uint8_t prefix)
 }
 
 /**
- * Data for a background FQDN resolution job. The provider outlives every
- * queued job: the daemon cancels all processor jobs before plugins unload.
+ * Drain the pending queue on a single worker thread: names resolve one at
+ * a time, so a slow resolver occupies at most one of charon's processor
+ * threads no matter how many names are queued. The provider outlives the
+ * job: the daemon cancels all processor jobs before plugins unload.
  */
-typedef struct {
-	/** provider owning the cache */
-	private_dhcp_inform_db_provider_t *provider;
-	/** name to resolve, owned */
-	char *fqdn;
-} fqdn_job_t;
-
-/**
- * Destroy background resolution job data
- */
-static void fqdn_job_destroy(fqdn_job_t *job)
+static job_requeue_t resolve_pending_job(private_dhcp_inform_db_provider_t *this)
 {
-	free(job->fqdn);
-	free(job);
-}
-
-/**
- * Resolve an FQDN on a worker thread and store the outcome in the cache;
- * failures are cached too, with a shorter TTL, so an unreachable resolver
- * is retried at most once per window
- */
-static job_requeue_t resolve_fqdn_job(fqdn_job_t *job)
-{
-	private_dhcp_inform_db_provider_t *this = job->provider;
 	struct addrinfo hints, *res;
 	fqdn_entry_t *entry;
-	uint32_t ip_addr = 0;
+	uint32_t ip_addr;
+	char *fqdn;
 
 	memset(&hints, 0, sizeof(hints));
 	hints.ai_family = AF_INET;
 	hints.ai_socktype = SOCK_STREAM;
 
-	if (getaddrinfo(job->fqdn, NULL, &hints, &res) == 0)
+	while (TRUE)
 	{
-		if (res->ai_family == AF_INET)
+		this->mutex->lock(this->mutex);
+		if (this->pending->get_first(this->pending, (void**)&fqdn) != SUCCESS)
 		{
-			struct sockaddr_in *sin = (struct sockaddr_in*)res->ai_addr;
-			ip_addr = sin->sin_addr.s_addr;
+			this->resolver_active = FALSE;
+			this->mutex->unlock(this->mutex);
+			return JOB_REQUEUE_NONE;
 		}
-		freeaddrinfo(res);
-		DBG2(DBG_CFG, "dhcp-inform-db: resolved FQDN %s", job->fqdn);
-	}
-	else
-	{
-		DBG1(DBG_CFG, "dhcp-inform-db: failed to resolve FQDN: %s", job->fqdn);
-	}
+		this->mutex->unlock(this->mutex);
 
-	this->mutex->lock(this->mutex);
-	entry = this->fqdn_cache->get(this->fqdn_cache, job->fqdn);
-	if (entry)
-	{
-		if (ip_addr)
+		/* the head entry stays queued while it resolves: producers only
+		 * append, and on job cancellation the list still owns the string */
+		ip_addr = 0;
+		if (getaddrinfo(fqdn, NULL, &hints, &res) == 0)
 		{
-			entry->addr = ip_addr;
+			if (res->ai_family == AF_INET)
+			{
+				struct sockaddr_in *sin = (struct sockaddr_in*)res->ai_addr;
+				ip_addr = sin->sin_addr.s_addr;
+			}
+			freeaddrinfo(res);
+			DBG2(DBG_CFG, "dhcp-inform-db: resolved FQDN %s", fqdn);
 		}
-		/* a failed refresh keeps the last known address serving and only
-		 * shortens the interval until the next attempt */
-		entry->expires = time_monotonic(NULL) +
-						 (ip_addr ? FQDN_CACHE_TTL : FQDN_NEGATIVE_TTL);
-		entry->resolving = FALSE;
-	}
-	this->mutex->unlock(this->mutex);
+		else
+		{
+			DBG1(DBG_CFG, "dhcp-inform-db: failed to resolve FQDN: %s", fqdn);
+		}
 
-	return JOB_REQUEUE_NONE;
+		this->mutex->lock(this->mutex);
+		entry = this->fqdn_cache->get(this->fqdn_cache, fqdn);
+		if (entry)
+		{
+			if (ip_addr)
+			{
+				entry->addr = ip_addr;
+			}
+			/* a failed refresh keeps the last known address serving and only
+			 * shortens the interval until the next attempt */
+			entry->expires = time_monotonic(NULL) +
+							 (ip_addr ? FQDN_CACHE_TTL : FQDN_NEGATIVE_TTL);
+			entry->resolving = FALSE;
+		}
+		this->pending->remove_first(this->pending, (void**)&fqdn);
+		this->mutex->unlock(this->mutex);
+		free(fqdn);
+	}
+}
+
+/**
+ * Queue a name for background resolution; the caller holds the mutex and
+ * has already marked the cache entry as resolving
+ */
+static void queue_resolution(private_dhcp_inform_db_provider_t *this,
+							 const char *fqdn)
+{
+	this->pending->insert_last(this->pending, strdup(fqdn));
+	if (!this->resolver_active)
+	{
+		this->resolver_active = TRUE;
+		lib->processor->queue_job(lib->processor,
+			(job_t*)callback_job_create((callback_job_cb_t)resolve_pending_job,
+										this, NULL, callback_job_cancel_thread));
+	}
 }
 
 /**
@@ -278,7 +301,6 @@ METHOD(dhcp_inform_db_provider_t, prewarm, void,
 {
 	enumerator_t *enumerator;
 	fqdn_entry_t *entry;
-	fqdn_job_t *job;
 	char *fqdn;
 
 	if (!this->db)
@@ -309,14 +331,7 @@ METHOD(dhcp_inform_db_provider_t, prewarm, void,
 				.resolving = TRUE,
 			);
 			this->fqdn_cache->put(this->fqdn_cache, strdup(fqdn), entry);
-			INIT(job,
-				.provider = this,
-				.fqdn = strdup(fqdn),
-			);
-			lib->processor->queue_job(lib->processor,
-				(job_t*)callback_job_create(
-					(callback_job_cb_t)resolve_fqdn_job, job,
-					(void*)fqdn_job_destroy, callback_job_cancel_thread));
+			queue_resolution(this, fqdn);
 		}
 		this->mutex->unlock(this->mutex);
 	}
@@ -333,7 +348,6 @@ static uint32_t resolve_fqdn(private_dhcp_inform_db_provider_t *this,
 							 const char *fqdn)
 {
 	fqdn_entry_t *entry;
-	fqdn_job_t *job = NULL;
 	uint32_t ip_addr = 0;
 	time_t now;
 
@@ -350,20 +364,9 @@ static uint32_t resolve_fqdn(private_dhcp_inform_db_provider_t *this,
 	if (entry->expires <= now && !entry->resolving)
 	{
 		entry->resolving = TRUE;
-		INIT(job,
-			.provider = this,
-			.fqdn = strdup(fqdn),
-		);
+		queue_resolution(this, fqdn);
 	}
 	this->mutex->unlock(this->mutex);
-
-	if (job)
-	{
-		lib->processor->queue_job(lib->processor,
-			(job_t*)callback_job_create((callback_job_cb_t)resolve_fqdn_job,
-										job, (void*)fqdn_job_destroy,
-										callback_job_cancel_thread));
-	}
 
 	return ip_addr;
 }
@@ -645,6 +648,7 @@ METHOD(dhcp_inform_provider_t, destroy, void,
 	private_dhcp_inform_db_provider_t *this)
 {
 	this->fqdn_cache->destroy_function(this->fqdn_cache, fqdn_entry_destroy);
+	this->pending->destroy_function(this->pending, free);
 	this->mutex->destroy(this->mutex);
 	DESTROY_IF(this->db);
 	free(this);
@@ -670,6 +674,7 @@ dhcp_inform_db_provider_t *dhcp_inform_db_provider_create()
 		},
 		.fqdn_cache = hashtable_create(hashtable_hash_str,
 									   hashtable_equals_str, 4),
+		.pending = linked_list_create(),
 		.mutex = mutex_create(MUTEX_TYPE_DEFAULT),
 	);
 
