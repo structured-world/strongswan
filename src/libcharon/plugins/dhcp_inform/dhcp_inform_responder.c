@@ -183,13 +183,13 @@ static identification_t *find_identity_by_vip(uint32_t vip_addr)
 		return NULL;
 	}
 
-	/* wait = TRUE: skipping a momentarily checked-out IKE_SA would silently
-	 * drop its identity routes from an otherwise successful ACK, and the
-	 * client has no reason to ask again. This callback runs on its own
-	 * processor job, so the bounded wait for a checkout delays only further
-	 * DHCP datagrams, nothing else. */
+	/* wait = FALSE: the manager's wait for a checked-out IKE_SA is
+	 * unbounded and the enumerator visits every SA, so waiting would let
+	 * a single SA stuck in a long operation anywhere on the daemon stall
+	 * all DHCP service. Skipping a busy SA at worst costs this exchange
+	 * its identity routes; the client's next INFORM refreshes them. */
 	enumerator = charon->controller->create_ike_sa_enumerator(
-						charon->controller, TRUE);
+						charon->controller, FALSE);
 	while (!identity && enumerator->enumerate(enumerator, &ike_sa))
 	{
 		enumerator_t *vip_enum;
@@ -708,8 +708,15 @@ static void process_dhcp_packet(private_dhcp_inform_responder_t *this,
 	inet_ntop(AF_INET, &dhcp->ciaddr, client_ip_str, sizeof(client_ip_str));
 	DBG1(DBG_NET, "dhcp-inform: received DHCPINFORM from %s", client_ip_str);
 
-	/* Identify the peer holding this virtual IP, if any */
-	identity = find_identity_by_vip(dhcp->ciaddr);
+	/* Identify the peer holding this virtual IP; only the database
+	 * provider consumes the identity, so skip the SA scan entirely when
+	 * it cannot serve */
+	identity = NULL;
+	if (this->db_provider &&
+		this->db_provider->provider.is_available(&this->db_provider->provider))
+	{
+		identity = find_identity_by_vip(dhcp->ciaddr);
+	}
 	if (identity)
 	{
 		DBG1(DBG_NET, "dhcp-inform: client %s identified as %Y",
