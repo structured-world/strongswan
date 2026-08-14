@@ -157,9 +157,10 @@ static linked_list_t *extract_ts_from_ike_sa(const char *client_ip)
 		child_enum = ike_sa->create_child_sa_enumerator(ike_sa);
 		while (child_enum->enumerate(child_enum, &child_sa))
 		{
-			/* Get remote (server-side) traffic selectors - these are the
-			 * networks the client should be able to reach */
-			ts_enum = child_sa->create_ts_enumerator(child_sa, FALSE);
+			/* The gateway's local (own) traffic selectors are the protected
+			 * networks the client reaches through the tunnel; the remote
+			 * side would merely name the client's own virtual IP */
+			ts_enum = child_sa->create_ts_enumerator(child_sa, TRUE);
 			while (ts_enum->enumerate(ts_enum, &ts))
 			{
 				traffic_selector_t *clone;
