@@ -349,9 +349,11 @@ static linked_list_t *get_routes_for_client(private_dhcp_inform_responder_t *thi
 }
 
 /**
- * Encode routes as DHCP option 121/249 format
+ * Encode routes as DHCP option 121/249 format, truncating at max_len so the
+ * result always fits the space the caller has left for both option copies
  */
-static chunk_t encode_classless_routes(linked_list_t *routes, uint32_t gateway)
+static chunk_t encode_classless_routes(linked_list_t *routes, uint32_t gateway,
+									   size_t max_len)
 {
 	chunk_t encoded;
 	enumerator_t *enumerator;
@@ -376,10 +378,10 @@ static chunk_t encode_classless_routes(linked_list_t *routes, uint32_t gateway)
 		ts->to_subnet(ts, &net, &prefix);
 		net->destroy(net);
 		route_len = 1 + ((prefix + 7) / 8) + 4;
-		/* Check for overflow (max DHCP option is 255 bytes anyway) */
-		if (total_len + route_len > 255)
+		if (total_len + route_len > max_len)
 		{
-			DBG1(DBG_NET, "dhcp-inform: routes exceed maximum option size");
+			DBG1(DBG_NET, "dhcp-inform: truncating routes to the %zu bytes "
+				 "the DHCP options can carry", max_len);
 			break;
 		}
 		total_len += route_len;
@@ -515,6 +517,7 @@ static void send_dhcp_ack(private_dhcp_inform_responder_t *this,
 	struct sockaddr_in dest;
 	size_t ack_len;
 	size_t required_space;
+	size_t routes_max;
 
 	memset(&ack, 0, sizeof(ack));
 
@@ -552,10 +555,21 @@ static void send_dhcp_ack(private_dhcp_inform_responder_t *this,
 		opt += 4;
 	}
 
-	/* Encode routes with server_ip as gateway */
-	routes_encoded = encode_classless_routes(routes, this->server_ip);
+	/* Encode routes with server_ip as gateway, capped to the space that
+	 * remains for TWO option copies (2-byte headers each) plus END, and to
+	 * the 255-byte single-option maximum */
+	if (opt + 5 < opt_end)
+	{
+		routes_max = min((size_t)(opt_end - opt - 5) / 2, (size_t)255);
+	}
+	else
+	{
+		routes_max = 0;
+	}
+	routes_encoded = encode_classless_routes(routes, this->server_ip,
+											 routes_max);
 
-	if (routes_encoded.len > 0 && routes_encoded.len <= 255)
+	if (routes_encoded.len > 0)
 	{
 		/* Calculate required space: 2 options * (2 byte header + data) + END */
 		required_space = 2 * (2 + routes_encoded.len) + 1;

@@ -16,6 +16,7 @@
 #include <selectors/traffic_selector.h>
 #include <networking/host.h>
 #include <threading/mutex.h>
+#include <processing/jobs/callback_job.h>
 
 #include <string.h>
 #include <netdb.h>
@@ -27,16 +28,23 @@
  */
 #define FQDN_CACHE_TTL 300
 
+/**
+ * How long a failed resolution is remembered before retrying, in seconds
+ */
+#define FQDN_NEGATIVE_TTL 60
+
 typedef struct private_dhcp_inform_db_provider_t private_dhcp_inform_db_provider_t;
 
 /**
  * Cached FQDN resolution
  */
 typedef struct {
-	/** resolved address, network byte order */
+	/** resolved address, network byte order; 0 while unresolved or failed */
 	uint32_t addr;
-	/** monotonic expiry time */
+	/** monotonic time after which a refresh becomes due */
 	time_t expires;
+	/** a background resolution job is in flight */
+	bool resolving;
 } fqdn_entry_t;
 
 /**
@@ -191,38 +199,42 @@ static bool ip_in_subnet(host_t *ip, host_t *network, uint8_t prefix)
 }
 
 /**
- * Resolve an FQDN to an IPv4 address (network byte order), 0 on failure.
- * Successful resolutions are cached, so the synchronous getaddrinfo() call
- * hits the request path at most once per FQDN and TTL window.
+ * Data for a background FQDN resolution job. The provider outlives every
+ * queued job: the daemon cancels all processor jobs before plugins unload.
  */
-static uint32_t resolve_fqdn(private_dhcp_inform_db_provider_t *this,
-							 const char *fqdn)
+typedef struct {
+	/** provider owning the cache */
+	private_dhcp_inform_db_provider_t *provider;
+	/** name to resolve, owned */
+	char *fqdn;
+} fqdn_job_t;
+
+/**
+ * Destroy background resolution job data
+ */
+static void fqdn_job_destroy(fqdn_job_t *job)
 {
+	free(job->fqdn);
+	free(job);
+}
+
+/**
+ * Resolve an FQDN on a worker thread and store the outcome in the cache;
+ * failures are cached too, with a shorter TTL, so an unreachable resolver
+ * is retried at most once per window
+ */
+static job_requeue_t resolve_fqdn_job(fqdn_job_t *job)
+{
+	private_dhcp_inform_db_provider_t *this = job->provider;
 	struct addrinfo hints, *res;
 	fqdn_entry_t *entry;
 	uint32_t ip_addr = 0;
-	time_t now;
-
-	now = time_monotonic(NULL);
-
-	this->mutex->lock(this->mutex);
-	entry = this->fqdn_cache->get(this->fqdn_cache, (void*)fqdn);
-	if (entry && entry->expires > now)
-	{
-		ip_addr = entry->addr;
-	}
-	this->mutex->unlock(this->mutex);
-
-	if (ip_addr)
-	{
-		return ip_addr;
-	}
 
 	memset(&hints, 0, sizeof(hints));
 	hints.ai_family = AF_INET;
 	hints.ai_socktype = SOCK_STREAM;
 
-	if (getaddrinfo(fqdn, NULL, &hints, &res) == 0)
+	if (getaddrinfo(job->fqdn, NULL, &hints, &res) == 0)
 	{
 		if (res->ai_family == AF_INET)
 		{
@@ -230,24 +242,66 @@ static uint32_t resolve_fqdn(private_dhcp_inform_db_provider_t *this,
 			ip_addr = sin->sin_addr.s_addr;
 		}
 		freeaddrinfo(res);
+		DBG2(DBG_CFG, "dhcp-inform-db: resolved FQDN %s", job->fqdn);
 	}
 	else
 	{
-		DBG1(DBG_CFG, "dhcp-inform-db: failed to resolve FQDN: %s", fqdn);
+		DBG1(DBG_CFG, "dhcp-inform-db: failed to resolve FQDN: %s", job->fqdn);
 	}
 
-	if (ip_addr)
+	this->mutex->lock(this->mutex);
+	entry = this->fqdn_cache->get(this->fqdn_cache, job->fqdn);
+	if (entry)
 	{
-		this->mutex->lock(this->mutex);
-		entry = this->fqdn_cache->get(this->fqdn_cache, (void*)fqdn);
-		if (!entry)
-		{
-			INIT(entry);
-			this->fqdn_cache->put(this->fqdn_cache, strdup(fqdn), entry);
-		}
 		entry->addr = ip_addr;
-		entry->expires = now + FQDN_CACHE_TTL;
-		this->mutex->unlock(this->mutex);
+		entry->expires = time_monotonic(NULL) +
+						 (ip_addr ? FQDN_CACHE_TTL : FQDN_NEGATIVE_TTL);
+		entry->resolving = FALSE;
+	}
+	this->mutex->unlock(this->mutex);
+
+	return JOB_REQUEUE_NONE;
+}
+
+/**
+ * Look an FQDN up in the cache, 0 when no address is known (yet).
+ * The request path never resolves: a miss or a due refresh queues a
+ * background job, and an expired entry keeps serving its last address
+ * until the refresh lands, so routes never drop in steady state.
+ */
+static uint32_t resolve_fqdn(private_dhcp_inform_db_provider_t *this,
+							 const char *fqdn)
+{
+	fqdn_entry_t *entry;
+	fqdn_job_t *job = NULL;
+	uint32_t ip_addr = 0;
+	time_t now;
+
+	now = time_monotonic(NULL);
+
+	this->mutex->lock(this->mutex);
+	entry = this->fqdn_cache->get(this->fqdn_cache, (void*)fqdn);
+	if (!entry)
+	{
+		INIT(entry);
+		this->fqdn_cache->put(this->fqdn_cache, strdup(fqdn), entry);
+	}
+	ip_addr = entry->addr;
+	if (entry->expires <= now && !entry->resolving)
+	{
+		entry->resolving = TRUE;
+		INIT(job,
+			.provider = this,
+			.fqdn = strdup(fqdn),
+		);
+	}
+	this->mutex->unlock(this->mutex);
+
+	if (job)
+	{
+		lib->processor->queue_job(lib->processor,
+			(job_t*)callback_job_create((callback_job_cb_t)resolve_fqdn_job,
+										job, (void*)fqdn_job_destroy, NULL));
 	}
 
 	return ip_addr;

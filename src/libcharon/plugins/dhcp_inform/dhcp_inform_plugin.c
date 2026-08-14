@@ -108,6 +108,16 @@ PLUGIN_DEFINE(dhcp_inform)
 			 "capability");
 		return NULL;
 	}
+	if (lib->settings->get_str(lib->settings,
+			"%s.plugins.dhcp-inform.interface", NULL, lib->ns) &&
+		!lib->caps->keep(lib->caps, CAP_NET_RAW))
+	{
+		/* SO_BINDTODEVICE on a non-loopback interface requires CAP_NET_RAW
+		 * even on a plain UDP socket */
+		DBG1(DBG_NET, "dhcp-inform plugin requires CAP_NET_RAW capability "
+			 "to bind to an interface");
+		return NULL;
+	}
 
 	INIT(this,
 		.public = {
