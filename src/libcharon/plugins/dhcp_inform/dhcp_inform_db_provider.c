@@ -253,7 +253,12 @@ static job_requeue_t resolve_fqdn_job(fqdn_job_t *job)
 	entry = this->fqdn_cache->get(this->fqdn_cache, job->fqdn);
 	if (entry)
 	{
-		entry->addr = ip_addr;
+		if (ip_addr)
+		{
+			entry->addr = ip_addr;
+		}
+		/* a failed refresh keeps the last known address serving and only
+		 * shortens the interval until the next attempt */
 		entry->expires = time_monotonic(NULL) +
 						 (ip_addr ? FQDN_CACHE_TTL : FQDN_NEGATIVE_TTL);
 		entry->resolving = FALSE;
