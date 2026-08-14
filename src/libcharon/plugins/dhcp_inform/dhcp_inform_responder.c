@@ -999,7 +999,12 @@ dhcp_inform_responder_t *dhcp_inform_responder_create()
 					  receive_dhcp, this);
 
 	/* Warm the FQDN cache only now: construction cannot fail anymore, so
-	 * the queued background jobs cannot outlive the provider they use */
+	 * the queued background jobs cannot outlive the provider they use.
+	 * Warming is asynchronous by design and startup never waits for DNS:
+	 * an INFORM racing the very first resolutions at worst gets an ACK
+	 * without an FQDN route, and the client's next periodic INFORM fills
+	 * it in. Delaying the ACK instead would risk the client's retransmit
+	 * timeout, losing ALL routes for that exchange. */
 	if (this->db_provider)
 	{
 		this->db_provider->prewarm(this->db_provider);
