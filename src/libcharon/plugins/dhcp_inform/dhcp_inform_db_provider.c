@@ -16,6 +16,7 @@
 #include <selectors/traffic_selector.h>
 #include <networking/host.h>
 #include <threading/mutex.h>
+#include <threading/thread.h>
 #include <processing/jobs/callback_job.h>
 
 #include <string.h>
@@ -228,6 +229,7 @@ static job_requeue_t resolve_pending_job(private_dhcp_inform_db_provider_t *this
 	fqdn_entry_t *entry;
 	uint32_t ip_addr;
 	char *fqdn;
+	bool old;
 
 	memset(&hints, 0, sizeof(hints));
 	hints.ai_family = AF_INET;
@@ -247,6 +249,11 @@ static job_requeue_t resolve_pending_job(private_dhcp_inform_db_provider_t *this
 		/* the head entry stays queued while it resolves: producers only
 		 * append, and on job cancellation the list still owns the string */
 		ip_addr = 0;
+		/* workers run with cancellation disabled: enable it around the
+		 * blocking lookup so the thread cancel that shutdown requests can
+		 * take effect instead of leaving processor teardown waiting on a
+		 * stuck resolution; no lock is held and the job owns no memory */
+		old = thread_cancelability(TRUE);
 		if (getaddrinfo(fqdn, NULL, &hints, &res) == 0)
 		{
 			if (res->ai_family == AF_INET)
@@ -261,6 +268,7 @@ static job_requeue_t resolve_pending_job(private_dhcp_inform_db_provider_t *this
 		{
 			DBG1(DBG_CFG, "dhcp-inform-db: failed to resolve FQDN: %s", fqdn);
 		}
+		thread_cancelability(old);
 
 		this->mutex->lock(this->mutex);
 		entry = this->fqdn_cache->get(this->fqdn_cache, fqdn);
