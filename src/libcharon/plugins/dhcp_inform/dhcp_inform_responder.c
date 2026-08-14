@@ -548,8 +548,9 @@ static void send_dhcp_ack(private_dhcp_inform_responder_t *this,
 	ack.hlen = request->hlen;
 	ack.xid = request->xid;
 	ack.ciaddr = client_ip;
-	ack.yiaddr = client_ip;
-	ack.siaddr = this->server_ip;
+	/* RFC 2131 4.3.5: an ACK answering INFORM assigns nothing, so yiaddr
+	 * stays zero, and siaddr names a bootstrap next-server, not us: the
+	 * server identity travels in option 54 only */
 	memcpy(ack.chaddr, request->chaddr, 16);
 	ack.magic = htonl(DHCP_MAGIC_COOKIE);
 
