@@ -288,7 +288,7 @@ static void add_routes_from_provider(dhcp_inform_provider_t *provider,
  */
 static linked_list_t *get_routes_for_client(private_dhcp_inform_responder_t *this,
 											const char *client_ip,
-											identification_t *identity)
+											uint32_t ciaddr)
 {
 	linked_list_t *routes;
 	dhcp_inform_provider_t *ts_prov, *db_prov, *static_prov;
@@ -320,7 +320,7 @@ static linked_list_t *get_routes_for_client(private_dhcp_inform_responder_t *thi
 	if (ts_prov && ts_prov->is_available(ts_prov))
 	{
 		DBG1(DBG_NET, "dhcp-inform: using TS routes mode (exclusive)");
-		add_routes_from_provider(ts_prov, client_ip, identity, routes);
+		add_routes_from_provider(ts_prov, client_ip, NULL, routes);
 		DBG1(DBG_NET, "dhcp-inform: found %d routes from TS for %s",
 			 routes->get_count(routes), client_ip);
 		return routes;
@@ -329,8 +329,25 @@ static linked_list_t *get_routes_for_client(private_dhcp_inform_responder_t *thi
 	/* MODE 2: Database routes (exclusive) */
 	if (db_prov && db_prov->is_available(db_prov))
 	{
+		identification_t *identity;
+
 		DBG1(DBG_NET, "dhcp-inform: using database routes mode (exclusive)");
+		/* The SA scan runs only here: the database provider is the sole
+		 * identity consumer, and this branch means it is the selected
+		 * route source, not merely an unused fallback */
+		identity = find_identity_by_vip(ciaddr);
+		if (identity)
+		{
+			DBG1(DBG_NET, "dhcp-inform: client %s identified as %Y",
+				 client_ip, identity);
+		}
+		else
+		{
+			DBG2(DBG_NET, "dhcp-inform: no IKE_SA found for client %s",
+				 client_ip);
+		}
 		add_routes_from_provider(db_prov, client_ip, identity, routes);
+		DESTROY_IF(identity);
 		DBG1(DBG_NET, "dhcp-inform: found %d routes from DB for %s",
 			 routes->get_count(routes), client_ip);
 		return routes;
@@ -340,7 +357,7 @@ static linked_list_t *get_routes_for_client(private_dhcp_inform_responder_t *thi
 	if (static_prov && static_prov->is_available(static_prov))
 	{
 		DBG1(DBG_NET, "dhcp-inform: using static routes mode (exclusive)");
-		add_routes_from_provider(static_prov, client_ip, identity, routes);
+		add_routes_from_provider(static_prov, client_ip, NULL, routes);
 		DBG1(DBG_NET, "dhcp-inform: found %d routes from config for %s",
 			 routes->get_count(routes), client_ip);
 		return routes;
@@ -678,7 +695,6 @@ static void process_dhcp_packet(private_dhcp_inform_responder_t *this,
 								dhcp_packet_t *dhcp, size_t len)
 {
 	linked_list_t *routes;
-	identification_t *identity;
 	char client_ip_str[INET_ADDRSTRLEN];
 
 	if (len < DHCP_MIN_MSG_SIZE)
@@ -708,34 +724,14 @@ static void process_dhcp_packet(private_dhcp_inform_responder_t *this,
 	inet_ntop(AF_INET, &dhcp->ciaddr, client_ip_str, sizeof(client_ip_str));
 	DBG1(DBG_NET, "dhcp-inform: received DHCPINFORM from %s", client_ip_str);
 
-	/* Identify the peer holding this virtual IP; only the database
-	 * provider consumes the identity, so skip the SA scan entirely when
-	 * it cannot serve */
-	identity = NULL;
-	if (this->db_provider &&
-		this->db_provider->provider.is_available(&this->db_provider->provider))
-	{
-		identity = find_identity_by_vip(dhcp->ciaddr);
-	}
-	if (identity)
-	{
-		DBG1(DBG_NET, "dhcp-inform: client %s identified as %Y",
-			 client_ip_str, identity);
-	}
-	else
-	{
-		DBG2(DBG_NET, "dhcp-inform: no IKE_SA found for client %s",
-			 client_ip_str);
-	}
-
-	/* Get routes from providers (mutually exclusive: TS OR DB OR static) */
-	routes = get_routes_for_client(this, client_ip_str, identity);
+	/* Get routes from providers (mutually exclusive: TS OR DB OR static);
+	 * the identity lookup happens inside, only for the mode that uses it */
+	routes = get_routes_for_client(this, client_ip_str, dhcp->ciaddr);
 
 	if (!routes)
 	{
 		DBG1(DBG_NET, "dhcp-inform: CRITICAL - failed to get routes list for %s",
 			 client_ip_str);
-		DESTROY_IF(identity);
 		return;
 	}
 
@@ -751,7 +747,6 @@ static void process_dhcp_packet(private_dhcp_inform_responder_t *this,
 	}
 
 	routes->destroy_offset(routes, offsetof(traffic_selector_t, destroy));
-	DESTROY_IF(identity);
 }
 
 /**
