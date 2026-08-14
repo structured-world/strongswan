@@ -183,8 +183,11 @@ static identification_t *find_identity_by_vip(uint32_t vip_addr)
 		return NULL;
 	}
 
+	/* wait = FALSE: this runs on a processor worker servicing the DHCP
+	 * socket; skipping momentarily checked-out IKE_SAs only costs the
+	 * identity for one request, blocking on them could stall the worker */
 	enumerator = charon->controller->create_ike_sa_enumerator(
-						charon->controller, TRUE);
+						charon->controller, FALSE);
 	while (!identity && enumerator->enumerate(enumerator, &ike_sa))
 	{
 		enumerator_t *vip_enum;
@@ -452,6 +455,11 @@ static uint8_t *find_dhcp_option(dhcp_packet_t *pkt, size_t pkt_len,
 		}
 		if (*opt == code)
 		{
+			/* reject options whose payload extends past the received data */
+			if (opt + 2 + opt[1] > end)
+			{
+				break;
+			}
 			if (len)
 			{
 				*len = opt[1];
@@ -722,10 +730,20 @@ static int create_dhcp_socket(const char *iface)
 		return -1;
 	}
 
-	/* Coexist with a DHCP daemon serving the physical segment */
+	/* Sharing port 67 with a DHCP daemon works only when every socket sets
+	 * SO_REUSEPORT; a daemon bound without it makes our bind fail with
+	 * EADDRINUSE. SO_REUSEADDR alone does not permit a second UDP bind on
+	 * the same address, but keeps rebinding painless after restarts. */
 	if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on)) < 0)
 	{
 		DBG1(DBG_NET, "dhcp-inform: failed to set SO_REUSEADDR: %s",
+			 strerror(errno));
+		close(fd);
+		return -1;
+	}
+	if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &on, sizeof(on)) < 0)
+	{
+		DBG1(DBG_NET, "dhcp-inform: failed to set SO_REUSEPORT: %s",
 			 strerror(errno));
 		close(fd);
 		return -1;

@@ -11,16 +11,33 @@
 
 #include <daemon.h>
 #include <collections/linked_list.h>
+#include <collections/hashtable.h>
 #include <database/database.h>
 #include <selectors/traffic_selector.h>
 #include <networking/host.h>
+#include <threading/mutex.h>
 
 #include <string.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 
+/**
+ * How long a resolved FQDN stays cached, in seconds
+ */
+#define FQDN_CACHE_TTL 300
+
 typedef struct private_dhcp_inform_db_provider_t private_dhcp_inform_db_provider_t;
+
+/**
+ * Cached FQDN resolution
+ */
+typedef struct {
+	/** resolved address, network byte order */
+	uint32_t addr;
+	/** monotonic expiry time */
+	time_t expires;
+} fqdn_entry_t;
 
 /**
  * Private data
@@ -36,6 +53,16 @@ struct private_dhcp_inform_db_provider_t {
 	 * Database connection
 	 */
 	database_t *db;
+
+	/**
+	 * FQDN resolution cache, fqdn string => fqdn_entry_t
+	 */
+	hashtable_t *fqdn_cache;
+
+	/**
+	 * Lock for the FQDN cache
+	 */
+	mutex_t *mutex;
 };
 
 /* Maximum CIDR string length for IPv4: "255.255.255.255/32" = 18 chars.
@@ -164,12 +191,32 @@ static bool ip_in_subnet(host_t *ip, host_t *network, uint8_t prefix)
 }
 
 /**
- * Resolve an FQDN to an IPv4 address (network byte order), 0 on failure
+ * Resolve an FQDN to an IPv4 address (network byte order), 0 on failure.
+ * Successful resolutions are cached, so the synchronous getaddrinfo() call
+ * hits the request path at most once per FQDN and TTL window.
  */
-static uint32_t resolve_fqdn(const char *fqdn)
+static uint32_t resolve_fqdn(private_dhcp_inform_db_provider_t *this,
+							 const char *fqdn)
 {
 	struct addrinfo hints, *res;
+	fqdn_entry_t *entry;
 	uint32_t ip_addr = 0;
+	time_t now;
+
+	now = time_monotonic(NULL);
+
+	this->mutex->lock(this->mutex);
+	entry = this->fqdn_cache->get(this->fqdn_cache, (void*)fqdn);
+	if (entry && entry->expires > now)
+	{
+		ip_addr = entry->addr;
+	}
+	this->mutex->unlock(this->mutex);
+
+	if (ip_addr)
+	{
+		return ip_addr;
+	}
 
 	memset(&hints, 0, sizeof(hints));
 	hints.ai_family = AF_INET;
@@ -189,14 +236,30 @@ static uint32_t resolve_fqdn(const char *fqdn)
 		DBG1(DBG_CFG, "dhcp-inform-db: failed to resolve FQDN: %s", fqdn);
 	}
 
+	if (ip_addr)
+	{
+		this->mutex->lock(this->mutex);
+		entry = this->fqdn_cache->get(this->fqdn_cache, (void*)fqdn);
+		if (!entry)
+		{
+			INIT(entry);
+			this->fqdn_cache->put(this->fqdn_cache, strdup(fqdn), entry);
+		}
+		entry->addr = ip_addr;
+		entry->expires = now + FQDN_CACHE_TTL;
+		this->mutex->unlock(this->mutex);
+	}
+
 	return ip_addr;
 }
 
 /**
  * Build a traffic selector from a v_user_routes resource:
- * "ip" and "fqdn" become host routes, "cidr" a subnet route
+ * "ip" and "fqdn" become host routes, "cidr" a subnet route.
+ * DHCP options 121/249 encode IPv4 only, so other families are skipped.
  */
-static traffic_selector_t *resource_to_ts(const char *type, const char *value)
+static traffic_selector_t *resource_to_ts(private_dhcp_inform_db_provider_t *this,
+										  const char *type, const char *value)
 {
 	traffic_selector_t *ts = NULL;
 	host_t *host;
@@ -206,16 +269,32 @@ static traffic_selector_t *resource_to_ts(const char *type, const char *value)
 		host = host_create_from_string((char*)value, 0);
 		if (host)
 		{
-			ts = traffic_selector_create_from_subnet(host, 32, 0, 0, 65535);
+			if (host->get_family(host) == AF_INET)
+			{
+				ts = traffic_selector_create_from_subnet(host, 32, 0, 0, 65535);
+			}
+			else
+			{
+				DBG1(DBG_CFG, "dhcp-inform-db: ignoring non-IPv4 ip resource %s",
+					 value);
+				host->destroy(host);
+			}
 		}
 	}
 	else if (streq(type, "cidr"))
 	{
 		ts = parse_cidr(value);
+		if (ts && ts->get_type(ts) != TS_IPV4_ADDR_RANGE)
+		{
+			DBG1(DBG_CFG, "dhcp-inform-db: ignoring non-IPv4 cidr resource %s",
+				 value);
+			ts->destroy(ts);
+			ts = NULL;
+		}
 	}
 	else if (streq(type, "fqdn"))
 	{
-		uint32_t ip_addr = resolve_fqdn(value);
+		uint32_t ip_addr = resolve_fqdn(this, value);
 
 		if (ip_addr)
 		{
@@ -247,15 +326,16 @@ static int add_identity_routes(private_dhcp_inform_db_provider_t *this,
 							   linked_list_t *routes)
 {
 	enumerator_t *enumerator;
-	chunk_t id_data;
-	char *identity_str, *at;
+	char identity_str[256], *at;
 	char *resource_type, *resource_value;
-	int added = 0;
+	int added = 0, written;
 
-	id_data = identity->get_encoding(identity);
-	identity_str = strndup(id_data.ptr, id_data.len);
-	if (!identity_str)
+	/* use the printable form: get_encoding() would return raw DER for
+	 * DN identities, which is no valid text lookup key */
+	written = snprintf(identity_str, sizeof(identity_str), "%Y", identity);
+	if (written < 0 || written >= (int)sizeof(identity_str))
 	{
+		DBG1(DBG_CFG, "dhcp-inform-db: identity too long for route lookup");
 		return 0;
 	}
 	at = strchr(identity_str, '@');
@@ -276,7 +356,6 @@ static int add_identity_routes(private_dhcp_inform_db_provider_t *this,
 	if (!enumerator)
 	{
 		DBG2(DBG_CFG, "dhcp-inform-db: v_user_routes not available");
-		free(identity_str);
 		return 0;
 	}
 
@@ -289,7 +368,7 @@ static int add_identity_routes(private_dhcp_inform_db_provider_t *this,
 			continue;
 		}
 
-		ts = resource_to_ts(resource_type, resource_value);
+		ts = resource_to_ts(this, resource_type, resource_value);
 		if (ts)
 		{
 			routes->insert_last(routes, ts);
@@ -305,7 +384,6 @@ static int add_identity_routes(private_dhcp_inform_db_provider_t *this,
 		DBG1(DBG_CFG, "dhcp-inform-db: found %d routes for identity %s",
 			 added, identity_str);
 	}
-	free(identity_str);
 
 	return added;
 }
@@ -434,9 +512,20 @@ METHOD(dhcp_inform_provider_t, is_available, bool,
 	return this->db != NULL;
 }
 
+/**
+ * Free an FQDN cache entry and its key
+ */
+static void fqdn_entry_destroy(void *val, const void *key)
+{
+	free(val);
+	free((void*)key);
+}
+
 METHOD(dhcp_inform_provider_t, destroy, void,
 	private_dhcp_inform_db_provider_t *this)
 {
+	this->fqdn_cache->destroy_function(this->fqdn_cache, fqdn_entry_destroy);
+	this->mutex->destroy(this->mutex);
 	DESTROY_IF(this->db);
 	free(this);
 }
@@ -458,6 +547,9 @@ dhcp_inform_db_provider_t *dhcp_inform_db_provider_create()
 				.destroy = _destroy,
 			},
 		},
+		.fqdn_cache = hashtable_create(hashtable_hash_str,
+									   hashtable_equals_str, 4),
+		.mutex = mutex_create(MUTEX_TYPE_DEFAULT),
 	);
 
 	/* Get database URI from configuration */
