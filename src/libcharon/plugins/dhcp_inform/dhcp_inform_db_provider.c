@@ -33,6 +33,12 @@
  */
 #define FQDN_NEGATIVE_TTL 60
 
+/**
+ * How long a stale address keeps serving while refreshes fail, in seconds;
+ * past this bound the name is treated as gone and its route stops
+ */
+#define FQDN_MAX_STALE 3600
+
 typedef struct private_dhcp_inform_db_provider_t private_dhcp_inform_db_provider_t;
 
 /**
@@ -43,6 +49,8 @@ typedef struct {
 	uint32_t addr;
 	/** monotonic time after which a refresh becomes due */
 	time_t expires;
+	/** monotonic time of the last successful resolution */
+	time_t last_ok;
 	/** the name is queued for background resolution */
 	bool resolving;
 } fqdn_entry_t;
@@ -258,13 +266,24 @@ static job_requeue_t resolve_pending_job(private_dhcp_inform_db_provider_t *this
 		entry = this->fqdn_cache->get(this->fqdn_cache, fqdn);
 		if (entry)
 		{
+			time_t now = time_monotonic(NULL);
+
 			if (ip_addr)
 			{
 				entry->addr = ip_addr;
+				entry->last_ok = now;
 			}
-			/* a failed refresh keeps the last known address serving and only
-			 * shortens the interval until the next attempt */
-			entry->expires = time_monotonic(NULL) +
+			else if (entry->addr && now - entry->last_ok > FQDN_MAX_STALE)
+			{
+				/* unresolvable for so long that the last address can no
+				 * longer be trusted: stop advertising the route */
+				DBG1(DBG_CFG, "dhcp-inform-db: FQDN %s stale beyond bound, "
+					 "dropping cached address", fqdn);
+				entry->addr = 0;
+			}
+			/* a failed refresh keeps the last known address serving, within
+			 * the stale bound, and only shortens the retry interval */
+			entry->expires = now +
 							 (ip_addr ? FQDN_CACHE_TTL : FQDN_NEGATIVE_TTL);
 			entry->resolving = FALSE;
 		}
