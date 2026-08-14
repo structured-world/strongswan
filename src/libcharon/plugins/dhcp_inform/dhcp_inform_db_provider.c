@@ -40,6 +40,13 @@
  */
 #define FQDN_MAX_STALE 3600
 
+/**
+ * How long a failed v_user_routes query disables the identity path before
+ * the next request probes again, in seconds; the view may be created while
+ * the daemon runs
+ */
+#define USER_ROUTES_RECHECK 60
+
 typedef struct private_dhcp_inform_db_provider_t private_dhcp_inform_db_provider_t;
 
 /**
@@ -90,6 +97,16 @@ struct private_dhcp_inform_db_provider_t {
 	 * The single resolver job is queued or running
 	 */
 	bool resolver_active;
+
+	/**
+	 * The optional v_user_routes view was usable when last queried
+	 */
+	bool user_routes;
+
+	/**
+	 * When unusable: monotonic time after which a request probes again
+	 */
+	time_t user_routes_recheck;
 };
 
 /* Maximum CIDR string length for IPv4: "255.255.255.255/32" = 18 chars.
@@ -323,6 +340,24 @@ static void queue_resolution(private_dhcp_inform_db_provider_t *this,
  * v_user_routes, so the cache is warm before the first DHCPINFORM arrives
  * and cold names cost a route only when added to the database at runtime
  */
+METHOD(dhcp_inform_db_provider_t, uses_identity, bool,
+	private_dhcp_inform_db_provider_t *this)
+{
+	bool usable;
+
+	if (!this->db)
+	{
+		return FALSE;
+	}
+	this->mutex->lock(this->mutex);
+	/* past the recheck time one request runs the identity path again as a
+	 * probe: its query outcome refreshes this state either way */
+	usable = this->user_routes ||
+			 time_monotonic(NULL) >= this->user_routes_recheck;
+	this->mutex->unlock(this->mutex);
+	return usable;
+}
+
 METHOD(dhcp_inform_db_provider_t, prewarm, void,
 	private_dhcp_inform_db_provider_t *this)
 {
@@ -341,6 +376,15 @@ METHOD(dhcp_inform_db_provider_t, prewarm, void,
 		DB_TEXT);
 	if (!enumerator)
 	{
+		/* pool-only schema: remember that the optional view is absent so
+		 * requests skip the identity lookup and its doomed query until the
+		 * next periodic probe; the view may be created later */
+		this->mutex->lock(this->mutex);
+		this->user_routes = FALSE;
+		this->user_routes_recheck = time_monotonic(NULL) + USER_ROUTES_RECHECK;
+		this->mutex->unlock(this->mutex);
+		DBG1(DBG_CFG, "dhcp-inform-db: v_user_routes not queryable, "
+			 "identity routes disabled for %ds", USER_ROUTES_RECHECK);
 		return;
 	}
 
@@ -505,9 +549,17 @@ static int add_identity_routes(private_dhcp_inform_db_provider_t *this,
 
 	if (!enumerator)
 	{
-		DBG2(DBG_CFG, "dhcp-inform-db: v_user_routes not available");
+		DBG1(DBG_CFG, "dhcp-inform-db: v_user_routes not queryable, "
+			 "identity routes disabled for %ds", USER_ROUTES_RECHECK);
+		this->mutex->lock(this->mutex);
+		this->user_routes = FALSE;
+		this->user_routes_recheck = time_monotonic(NULL) + USER_ROUTES_RECHECK;
+		this->mutex->unlock(this->mutex);
 		return 0;
 	}
+	this->mutex->lock(this->mutex);
+	this->user_routes = TRUE;
+	this->mutex->unlock(this->mutex);
 
 	while (enumerator->enumerate(enumerator, &resource_type, &resource_value))
 	{
@@ -698,11 +750,14 @@ dhcp_inform_db_provider_t *dhcp_inform_db_provider_create()
 				.destroy = _destroy,
 			},
 			.prewarm = _prewarm,
+			.uses_identity = _uses_identity,
 		},
 		.fqdn_cache = hashtable_create(hashtable_hash_str,
 									   hashtable_equals_str, 4),
 		.pending = linked_list_create(),
 		.mutex = mutex_create(MUTEX_TYPE_DEFAULT),
+		/* assumed present until the prewarm probe learns otherwise */
+		.user_routes = TRUE,
 	);
 
 	/* Get database URI from configuration */

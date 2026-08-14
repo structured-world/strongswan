@@ -50,6 +50,16 @@ struct dhcp_inform_db_provider_t {
 	 * @param this			provider instance
 	 */
 	void (*prewarm)(dhcp_inform_db_provider_t *this);
+
+	/**
+	 * Check whether identity routes can currently be served. When the
+	 * optional v_user_routes view is not queryable the identity path is
+	 * disabled for a recheck interval, then probed again: the view may be
+	 * created while the daemon runs.
+	 *
+	 * @return				TRUE if identity routes are available
+	 */
+	bool (*uses_identity)(dhcp_inform_db_provider_t *this);
 };
 
 /**

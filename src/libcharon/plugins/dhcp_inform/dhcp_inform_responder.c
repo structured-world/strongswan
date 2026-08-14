@@ -333,9 +333,14 @@ static linked_list_t *get_routes_for_client(private_dhcp_inform_responder_t *thi
 
 		DBG1(DBG_NET, "dhcp-inform: using database routes mode (exclusive)");
 		/* The SA scan runs only here: the database provider is the sole
-		 * identity consumer, and this branch means it is the selected
-		 * route source, not merely an unused fallback */
-		identity = find_identity_by_vip(ciaddr);
+		 * identity consumer, this branch means it is the selected route
+		 * source, and a pool-only schema without v_user_routes never pays
+		 * for a lookup it cannot use */
+		identity = NULL;
+		if (this->db_provider->uses_identity(this->db_provider))
+		{
+			identity = find_identity_by_vip(ciaddr);
+		}
 		if (identity)
 		{
 			DBG1(DBG_NET, "dhcp-inform: client %s identified as %Y",
@@ -837,7 +842,12 @@ static int create_dhcp_socket(const char *iface)
 	}
 
 	/* Optional: restrict to the VPN interface. Tunnelled packets are still
-	 * delivered, they surface on the interface carrying the ESP traffic. */
+	 * delivered, they surface on the interface carrying the ESP traffic.
+	 * The binding applies to the whole socket, so ACKs also egress here:
+	 * an rx-only device filter does not exist for UDP, and a second port-67
+	 * send socket would need address reuse, reopening the flow-diversion
+	 * hole that exclusive ownership closes. Asymmetrically routed gateways
+	 * should leave the option unset and let routing pick the egress. */
 	if (iface && setsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE, iface,
 							strlen(iface)) < 0)
 	{
