@@ -393,7 +393,8 @@ static linked_list_t *clone_routes(linked_list_t *source)
 }
 
 METHOD(dhcp_inform_provider_t, get_routes, linked_list_t*,
-	private_dhcp_inform_static_provider_t *this, const char *client_ip)
+	private_dhcp_inform_static_provider_t *this, const char *client_ip,
+	identification_t *identity)
 {
 	enumerator_t *enumerator;
 	pool_entry_t *pool;

@@ -202,7 +202,8 @@ static linked_list_t *extract_ts_from_ike_sa(const char *client_ip)
 }
 
 METHOD(dhcp_inform_provider_t, get_routes, linked_list_t*,
-	private_dhcp_inform_ts_provider_t *this, const char *client_ip)
+	private_dhcp_inform_ts_provider_t *this, const char *client_ip,
+	identification_t *identity)
 {
 	linked_list_t *routes;
 

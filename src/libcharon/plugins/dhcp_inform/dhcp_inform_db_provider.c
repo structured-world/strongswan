@@ -15,6 +15,11 @@
 #include <selectors/traffic_selector.h>
 #include <networking/host.h>
 
+#include <string.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+
 typedef struct private_dhcp_inform_db_provider_t private_dhcp_inform_db_provider_t;
 
 /**
@@ -158,54 +163,173 @@ static bool ip_in_subnet(host_t *ip, host_t *network, uint8_t prefix)
 	return TRUE;
 }
 
-METHOD(dhcp_inform_provider_t, get_routes, linked_list_t*,
-	private_dhcp_inform_db_provider_t *this, const char *client_ip)
+/**
+ * Resolve an FQDN to an IPv4 address (network byte order), 0 on failure
+ */
+static uint32_t resolve_fqdn(const char *fqdn)
 {
-	linked_list_t *routes;
+	struct addrinfo hints, *res;
+	uint32_t ip_addr = 0;
+
+	memset(&hints, 0, sizeof(hints));
+	hints.ai_family = AF_INET;
+	hints.ai_socktype = SOCK_STREAM;
+
+	if (getaddrinfo(fqdn, NULL, &hints, &res) == 0)
+	{
+		if (res->ai_family == AF_INET)
+		{
+			struct sockaddr_in *sin = (struct sockaddr_in*)res->ai_addr;
+			ip_addr = sin->sin_addr.s_addr;
+		}
+		freeaddrinfo(res);
+	}
+	else
+	{
+		DBG1(DBG_CFG, "dhcp-inform-db: failed to resolve FQDN: %s", fqdn);
+	}
+
+	return ip_addr;
+}
+
+/**
+ * Build a traffic selector from a v_user_routes resource:
+ * "ip" and "fqdn" become host routes, "cidr" a subnet route
+ */
+static traffic_selector_t *resource_to_ts(const char *type, const char *value)
+{
+	traffic_selector_t *ts = NULL;
+	host_t *host;
+
+	if (streq(type, "ip"))
+	{
+		host = host_create_from_string((char*)value, 0);
+		if (host)
+		{
+			ts = traffic_selector_create_from_subnet(host, 32, 0, 0, 65535);
+		}
+	}
+	else if (streq(type, "cidr"))
+	{
+		ts = parse_cidr(value);
+	}
+	else if (streq(type, "fqdn"))
+	{
+		uint32_t ip_addr = resolve_fqdn(value);
+
+		if (ip_addr)
+		{
+			host = host_create_from_chunk(AF_INET,
+					chunk_create((char*)&ip_addr, 4), 0);
+			if (host)
+			{
+				ts = traffic_selector_create_from_subnet(host, 32, 0, 0, 65535);
+			}
+		}
+	}
+	else
+	{
+		DBG2(DBG_CFG, "dhcp-inform-db: unknown resource type=%s value=%s",
+			 type, value);
+	}
+
+	return ts;
+}
+
+/**
+ * Add per-identity routes from the v_user_routes VIEW:
+ * (identity, resource_type, resource_value). The identity is matched
+ * without a domain part, so user@example.org looks up as "user".
+ * A missing view is not an error, deployments may use v_pool_routes only.
+ */
+static int add_identity_routes(private_dhcp_inform_db_provider_t *this,
+							   identification_t *identity,
+							   linked_list_t *routes)
+{
+	enumerator_t *enumerator;
+	chunk_t id_data;
+	char *identity_str, *at;
+	char *resource_type, *resource_value;
+	int added = 0;
+
+	id_data = identity->get_encoding(identity);
+	identity_str = strndup(id_data.ptr, id_data.len);
+	if (!identity_str)
+	{
+		return 0;
+	}
+	at = strchr(identity_str, '@');
+	if (at)
+	{
+		*at = '\0';
+	}
+
+	DBG2(DBG_CFG, "dhcp-inform-db: looking up routes for identity %s",
+		 identity_str);
+
+	enumerator = this->db->query(this->db,
+		"SELECT resource_type, resource_value FROM v_user_routes "
+		"WHERE identity = ?",
+		DB_TEXT, identity_str,
+		DB_TEXT, DB_TEXT);
+
+	if (!enumerator)
+	{
+		DBG2(DBG_CFG, "dhcp-inform-db: v_user_routes not available");
+		free(identity_str);
+		return 0;
+	}
+
+	while (enumerator->enumerate(enumerator, &resource_type, &resource_value))
+	{
+		traffic_selector_t *ts;
+
+		if (!resource_type || !resource_value)
+		{
+			continue;
+		}
+
+		ts = resource_to_ts(resource_type, resource_value);
+		if (ts)
+		{
+			routes->insert_last(routes, ts);
+			added++;
+			DBG2(DBG_CFG, "dhcp-inform-db: added route %R for %s",
+				 ts, identity_str);
+		}
+	}
+	enumerator->destroy(enumerator);
+
+	if (added)
+	{
+		DBG1(DBG_CFG, "dhcp-inform-db: found %d routes for identity %s",
+			 added, identity_str);
+	}
+	free(identity_str);
+
+	return added;
+}
+
+/**
+ * Add per-pool routes from the v_pool_routes VIEW: (pool_cidr, route).
+ * All pairs are fetched and filtered in C for database portability
+ * (works with PostgreSQL, MySQL, SQLite via the database abstraction).
+ */
+static int add_pool_routes(private_dhcp_inform_db_provider_t *this,
+						   host_t *client, linked_list_t *routes)
+{
 	enumerator_t *enumerator;
 	char *pool_cidr, *route_value;
-	host_t *client;
-	int routes_added = 0;
+	int added = 0;
 
-	routes = linked_list_create();
-	if (!routes)
-	{
-		return NULL;
-	}
-
-	if (!this->db)
-	{
-		return routes;
-	}
-
-	if (!client_ip || !*client_ip)
-	{
-		DBG1(DBG_CFG, "dhcp-inform-db: empty client IP");
-		return routes;
-	}
-
-	client = host_create_from_string((char*)client_ip, 0);
-	if (!client)
-	{
-		DBG1(DBG_CFG, "dhcp-inform-db: invalid client IP: %s", client_ip);
-		return routes;
-	}
-
-	DBG2(DBG_CFG, "dhcp-inform-db: looking up routes for IP %s", client_ip);
-
-	/* Query all pool/route pairs, filter in C for database portability.
-	 * Uses v_pool_routes VIEW: (pool_cidr, route).
-	 * Works with PostgreSQL, MySQL, SQLite via strongSwan database abstraction.
-	 */
 	enumerator = this->db->query(this->db,
 		"SELECT pool_cidr, route FROM v_pool_routes",
 		DB_TEXT, DB_TEXT);
 
 	if (!enumerator)
 	{
-		DBG1(DBG_CFG, "dhcp-inform-db: query failed");
-		client->destroy(client);
-		return routes;
+		DBG2(DBG_CFG, "dhcp-inform-db: v_pool_routes not available");
+		return 0;
 	}
 
 	while (enumerator->enumerate(enumerator, &pool_cidr, &route_value))
@@ -238,15 +362,62 @@ METHOD(dhcp_inform_provider_t, get_routes, linked_list_t*,
 		if (ts)
 		{
 			routes->insert_last(routes, ts);
-			routes_added++;
+			added++;
 			DBG2(DBG_CFG, "dhcp-inform-db: added route %s from pool %s",
 				 route_value, pool_cidr);
 		}
 	}
 	enumerator->destroy(enumerator);
+
+	return added;
+}
+
+METHOD(dhcp_inform_provider_t, get_routes, linked_list_t*,
+	private_dhcp_inform_db_provider_t *this, const char *client_ip,
+	identification_t *identity)
+{
+	linked_list_t *routes;
+	host_t *client;
+	int routes_added = 0;
+
+	routes = linked_list_create();
+	if (!routes)
+	{
+		return NULL;
+	}
+
+	if (!this->db)
+	{
+		return routes;
+	}
+
+	if (!client_ip || !*client_ip)
+	{
+		DBG1(DBG_CFG, "dhcp-inform-db: empty client IP");
+		return routes;
+	}
+
+	client = host_create_from_string((char*)client_ip, 0);
+	if (!client)
+	{
+		DBG1(DBG_CFG, "dhcp-inform-db: invalid client IP: %s", client_ip);
+		return routes;
+	}
+
+	DBG2(DBG_CFG, "dhcp-inform-db: looking up routes for IP %s", client_ip);
+
+	/* Per-identity routes first, per-pool routes on top; the responder
+	 * deduplicates overlapping entries */
+	if (identity)
+	{
+		routes_added += add_identity_routes(this, identity, routes);
+	}
+	routes_added += add_pool_routes(this, client, routes);
+
 	client->destroy(client);
 
-	DBG1(DBG_CFG, "dhcp-inform-db: found %d routes for %s", routes_added, client_ip);
+	DBG1(DBG_CFG, "dhcp-inform-db: found %d routes for %s", routes_added,
+		 client_ip);
 
 	return routes;
 }
