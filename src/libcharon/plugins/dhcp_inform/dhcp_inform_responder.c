@@ -198,9 +198,11 @@ static identification_t *find_identity_by_vip(uint32_t vip_addr)
 		{
 			if (vip->ip_equals(vip, ike_vip))
 			{
-				/* clone: the identification_t is owned by the IKE_SA and only
-				 * valid while the enumerator holds it */
-				identity = ike_sa->get_other_id(ike_sa);
+				/* prefer the authenticated EAP identity, it falls back to
+				 * the IKE identity for non-EAP peers; clone it, the
+				 * identification_t is owned by the IKE_SA and only valid
+				 * while the enumerator holds it */
+				identity = ike_sa->get_other_eap_id(ike_sa);
 				identity = identity->clone(identity);
 				break;
 			}
@@ -364,6 +366,13 @@ static chunk_t encode_classless_routes(linked_list_t *routes, uint32_t gateway)
 		host_t *net;
 		uint8_t prefix;
 
+		/* options 121/249 are IPv4-only; providers filter families, this
+		 * guards against any selector slipping through (e.g. from TS mode) */
+		if (ts->get_type(ts) != TS_IPV4_ADDR_RANGE)
+		{
+			continue;
+		}
+
 		ts->to_subnet(ts, &net, &prefix);
 		net->destroy(net);
 		route_len = 1 + ((prefix + 7) / 8) + 4;
@@ -398,6 +407,11 @@ static chunk_t encode_classless_routes(linked_list_t *routes, uint32_t gateway)
 		chunk_t net_chunk;
 		uint8_t prefix;
 		int subnet_bytes;
+
+		if (ts->get_type(ts) != TS_IPV4_ADDR_RANGE)
+		{
+			continue;
+		}
 
 		ts->to_subnet(ts, &net, &prefix);
 		net_chunk = net->get_address(net);
@@ -590,10 +604,44 @@ static void send_dhcp_ack(private_dhcp_inform_responder_t *this,
 	dest.sin_port = htons(DHCP_CLIENT_PORT);
 	dest.sin_addr.s_addr = client_ip;
 
-	if (sendto(this->fd, &ack, ack_len, 0,
-			   (struct sockaddr*)&dest, sizeof(dest)) < 0)
+	/* Pin the source to the configured server address via IP_PKTINFO: an
+	 * unconnected socket would take it from the route, which can disagree
+	 * with the DHCP server identifier and miss the IPsec policy */
+	struct iovec iov = {
+		.iov_base = &ack,
+		.iov_len = ack_len,
+	};
+	char cbuf[CMSG_SPACE(sizeof(struct in_pktinfo))] = {};
+	struct msghdr msg = {
+		.msg_name = &dest,
+		.msg_namelen = sizeof(dest),
+		.msg_iov = &iov,
+		.msg_iovlen = 1,
+		.msg_control = cbuf,
+		.msg_controllen = sizeof(cbuf),
+	};
+	struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+	struct in_pktinfo *pktinfo;
+
+	cmsg->cmsg_level = IPPROTO_IP;
+	cmsg->cmsg_type = IP_PKTINFO;
+	cmsg->cmsg_len = CMSG_LEN(sizeof(struct in_pktinfo));
+	pktinfo = (struct in_pktinfo*)CMSG_DATA(cmsg);
+	pktinfo->ipi_spec_dst.s_addr = this->server_ip;
+
+	if (sendmsg(this->fd, &msg, 0) < 0)
 	{
-		DBG1(DBG_NET, "dhcp-inform: failed to send DHCPACK: %s", strerror(errno));
+		/* the pinned source only routes when the configured server address
+		 * is local; fall back to route-selected source otherwise */
+		DBG2(DBG_NET, "dhcp-inform: send with pinned source failed (%s), "
+			 "retrying with routed source", strerror(errno));
+		msg.msg_control = NULL;
+		msg.msg_controllen = 0;
+		if (sendmsg(this->fd, &msg, 0) < 0)
+		{
+			DBG1(DBG_NET, "dhcp-inform: failed to send DHCPACK: %s",
+				 strerror(errno));
+		}
 	}
 	else
 	{
@@ -711,7 +759,8 @@ CALLBACK(receive_dhcp, bool,
 }
 
 /**
- * Create the UDP socket receiving DHCPINFORM and sending replies
+ * Create the UDP socket receiving DHCPINFORM and sending replies.
+ * Returns the socket, or the negated errno of the failed operation.
  */
 static int create_dhcp_socket(const char *iface)
 {
@@ -720,14 +769,14 @@ static int create_dhcp_socket(const char *iface)
 		.sin_port = htons(DHCP_SERVER_PORT),
 		.sin_addr.s_addr = htonl(INADDR_ANY),
 	};
-	int fd, on = 1;
+	int fd, err, on = 1;
 
 	fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, IPPROTO_UDP);
 	if (fd < 0)
 	{
 		DBG1(DBG_NET, "dhcp-inform: failed to create socket: %s",
 			 strerror(errno));
-		return -1;
+		return -errno;
 	}
 
 	/* Sharing port 67 with a DHCP daemon works only when every socket sets
@@ -738,15 +787,17 @@ static int create_dhcp_socket(const char *iface)
 	{
 		DBG1(DBG_NET, "dhcp-inform: failed to set SO_REUSEADDR: %s",
 			 strerror(errno));
+		err = errno;
 		close(fd);
-		return -1;
+		return -err;
 	}
 	if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &on, sizeof(on)) < 0)
 	{
 		DBG1(DBG_NET, "dhcp-inform: failed to set SO_REUSEPORT: %s",
 			 strerror(errno));
+		err = errno;
 		close(fd);
-		return -1;
+		return -err;
 	}
 
 	/* DHCPINFORM is typically sent to 255.255.255.255 */
@@ -754,8 +805,9 @@ static int create_dhcp_socket(const char *iface)
 	{
 		DBG1(DBG_NET, "dhcp-inform: failed to set SO_BROADCAST: %s",
 			 strerror(errno));
+		err = errno;
 		close(fd);
-		return -1;
+		return -err;
 	}
 
 	/* Optional: restrict to the VPN interface. Tunnelled packets are still
@@ -765,16 +817,18 @@ static int create_dhcp_socket(const char *iface)
 	{
 		DBG1(DBG_NET, "dhcp-inform: failed to bind to %s: %s",
 			 iface, strerror(errno));
+		err = errno;
 		close(fd);
-		return -1;
+		return -err;
 	}
 
 	if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0)
 	{
 		DBG1(DBG_NET, "dhcp-inform: failed to bind to port 67: %s",
 			 strerror(errno));
+		err = errno;
 		close(fd);
-		return -1;
+		return -err;
 	}
 
 	return fd;
@@ -902,6 +956,15 @@ dhcp_inform_responder_t *dhcp_inform_responder_create()
 
 	/* Create the UDP socket used for both directions */
 	this->fd = create_dhcp_socket(iface);
+	if (this->fd == -EADDRINUSE)
+	{
+		/* another DHCP daemon owns the port without SO_REUSEPORT; keep the
+		 * daemon running with the responder disabled instead of failing the
+		 * whole charon startup on such hosts */
+		DBG1(DBG_NET, "dhcp-inform: port 67 is taken by another process "
+			 "without SO_REUSEPORT, responder disabled");
+		return &this->public;
+	}
 	if (this->fd < 0)
 	{
 		destroy(this);

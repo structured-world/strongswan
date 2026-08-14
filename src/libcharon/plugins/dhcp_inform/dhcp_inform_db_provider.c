@@ -338,10 +338,15 @@ static int add_identity_routes(private_dhcp_inform_db_provider_t *this,
 		DBG1(DBG_CFG, "dhcp-inform-db: identity too long for route lookup");
 		return 0;
 	}
-	at = strchr(identity_str, '@');
-	if (at)
+	/* strip the domain part of mail-style identities only; a DN can
+	 * legitimately contain '@' inside an emailAddress component */
+	if (identity->get_type(identity) == ID_RFC822_ADDR)
 	{
-		*at = '\0';
+		at = strchr(identity_str, '@');
+		if (at)
+		{
+			*at = '\0';
+		}
 	}
 
 	DBG2(DBG_CFG, "dhcp-inform-db: looking up routes for identity %s",

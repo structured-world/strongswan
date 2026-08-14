@@ -101,10 +101,11 @@ PLUGIN_DEFINE(dhcp_inform)
 {
 	private_dhcp_inform_plugin_t *this;
 
-	if (!lib->caps->keep(lib->caps, CAP_NET_RAW))
+	if (!lib->caps->keep(lib->caps, CAP_NET_BIND_SERVICE))
 	{
-		/* Required for AF_PACKET socket to receive broadcasts */
-		DBG1(DBG_NET, "dhcp-inform plugin requires CAP_NET_RAW capability");
+		/* Required to bind the DHCP server port (67) */
+		DBG1(DBG_NET, "dhcp-inform plugin requires CAP_NET_BIND_SERVICE "
+			 "capability");
 		return NULL;
 	}
 
