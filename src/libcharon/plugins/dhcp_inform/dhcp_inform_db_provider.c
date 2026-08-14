@@ -264,6 +264,55 @@ static job_requeue_t resolve_fqdn_job(fqdn_job_t *job)
 }
 
 /**
+ * Queue background resolutions for every fqdn resource already present in
+ * v_user_routes, so the cache is warm before the first DHCPINFORM arrives
+ * and cold names cost a route only when added to the database at runtime
+ */
+static void prewarm_fqdn_cache(private_dhcp_inform_db_provider_t *this)
+{
+	enumerator_t *enumerator;
+	fqdn_entry_t *entry;
+	fqdn_job_t *job;
+	char *fqdn;
+
+	enumerator = this->db->query(this->db,
+		"SELECT DISTINCT resource_value FROM v_user_routes "
+		"WHERE resource_type = 'fqdn'",
+		DB_TEXT);
+	if (!enumerator)
+	{
+		return;
+	}
+
+	while (enumerator->enumerate(enumerator, &fqdn))
+	{
+		if (!fqdn || !*fqdn)
+		{
+			continue;
+		}
+		this->mutex->lock(this->mutex);
+		entry = this->fqdn_cache->get(this->fqdn_cache, fqdn);
+		if (!entry)
+		{
+			INIT(entry,
+				.resolving = TRUE,
+			);
+			this->fqdn_cache->put(this->fqdn_cache, strdup(fqdn), entry);
+			INIT(job,
+				.provider = this,
+				.fqdn = strdup(fqdn),
+			);
+			lib->processor->queue_job(lib->processor,
+				(job_t*)callback_job_create(
+					(callback_job_cb_t)resolve_fqdn_job, job,
+					(void*)fqdn_job_destroy, callback_job_cancel_thread));
+		}
+		this->mutex->unlock(this->mutex);
+	}
+	enumerator->destroy(enumerator);
+}
+
+/**
  * Look an FQDN up in the cache, 0 when no address is known (yet).
  * The request path never resolves: a miss or a due refresh queues a
  * background job, and an expired entry keeps serving its last address
@@ -301,7 +350,8 @@ static uint32_t resolve_fqdn(private_dhcp_inform_db_provider_t *this,
 	{
 		lib->processor->queue_job(lib->processor,
 			(job_t*)callback_job_create((callback_job_cb_t)resolve_fqdn_job,
-										job, (void*)fqdn_job_destroy, NULL));
+										job, (void*)fqdn_job_destroy,
+										callback_job_cancel_thread));
 	}
 
 	return ip_addr;
@@ -621,6 +671,7 @@ dhcp_inform_db_provider_t *dhcp_inform_db_provider_create()
 		if (this->db)
 		{
 			DBG1(DBG_CFG, "dhcp-inform: database provider connected");
+			prewarm_fqdn_cache(this);
 		}
 		else
 		{

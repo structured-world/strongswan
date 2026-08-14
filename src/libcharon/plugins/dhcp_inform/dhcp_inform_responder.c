@@ -183,11 +183,13 @@ static identification_t *find_identity_by_vip(uint32_t vip_addr)
 		return NULL;
 	}
 
-	/* wait = FALSE: this runs on a processor worker servicing the DHCP
-	 * socket; skipping momentarily checked-out IKE_SAs only costs the
-	 * identity for one request, blocking on them could stall the worker */
+	/* wait = TRUE: skipping a momentarily checked-out IKE_SA would silently
+	 * drop its identity routes from an otherwise successful ACK, and the
+	 * client has no reason to ask again. This callback runs on its own
+	 * processor job, so the bounded wait for a checkout delays only further
+	 * DHCP datagrams, nothing else. */
 	enumerator = charon->controller->create_ike_sa_enumerator(
-						charon->controller, FALSE);
+						charon->controller, TRUE);
 	while (!identity && enumerator->enumerate(enumerator, &ike_sa))
 	{
 		enumerator_t *vip_enum;
@@ -493,12 +495,14 @@ static uint8_t *find_dhcp_option(dhcp_packet_t *pkt, size_t pkt_len,
 }
 
 /**
- * Get DHCP message type
+ * Get DHCP message type, 0 unless the option carries exactly one byte
  */
 static uint8_t get_dhcp_type(dhcp_packet_t *pkt, size_t pkt_len)
 {
-	uint8_t *type = find_dhcp_option(pkt, pkt_len, DHCP_OPT_MESSAGE_TYPE, NULL);
-	return type ? *type : 0;
+	uint8_t *type, type_len = 0;
+
+	type = find_dhcp_option(pkt, pkt_len, DHCP_OPT_MESSAGE_TYPE, &type_len);
+	return (type && type_len == 1) ? *type : 0;
 }
 
 /**
@@ -750,13 +754,16 @@ CALLBACK(receive_dhcp, bool,
 	private_dhcp_inform_responder_t *this, int fd, watcher_event_t event)
 {
 	dhcp_packet_t packet;
+	struct sockaddr_in src;
+	socklen_t src_len = sizeof(src);
 	ssize_t len;
 
 	/* Zero so option parsing never walks uninitialized tail bytes when the
 	 * client sends less than the full options capacity */
 	memset(&packet, 0, sizeof(packet));
 
-	len = recvfrom(fd, &packet, sizeof(packet), MSG_DONTWAIT, NULL, NULL);
+	len = recvfrom(fd, &packet, sizeof(packet), MSG_DONTWAIT,
+				   (struct sockaddr*)&src, &src_len);
 
 	if (len < 0)
 	{
@@ -764,6 +771,22 @@ CALLBACK(receive_dhcp, bool,
 		{
 			DBG1(DBG_NET, "dhcp-inform: recvfrom failed: %s", strerror(errno));
 		}
+		return TRUE;
+	}
+
+	/* Trust ciaddr only when it matches the actual sender: the wildcard
+	 * bind is reachable beyond the VPN, and a spoofed ciaddr would
+	 * otherwise trigger SA scans, database queries and misdirected ACKs */
+	if (src_len < sizeof(src) || src.sin_family != AF_INET ||
+		src.sin_port != htons(DHCP_CLIENT_PORT) ||
+		(len >= (ssize_t)DHCP_MIN_MSG_SIZE &&
+		 src.sin_addr.s_addr != packet.ciaddr))
+	{
+		char src_str[INET_ADDRSTRLEN];
+
+		inet_ntop(AF_INET, &src.sin_addr, src_str, sizeof(src_str));
+		DBG2(DBG_NET, "dhcp-inform: dropping datagram with unexpected "
+			 "sender %s:%u", src_str, ntohs(src.sin_port));
 		return TRUE;
 	}
 
@@ -793,21 +816,14 @@ static int create_dhcp_socket(const char *iface)
 		return -errno;
 	}
 
-	/* Sharing port 67 with a DHCP daemon works only when every socket sets
-	 * SO_REUSEPORT; a daemon bound without it makes our bind fail with
-	 * EADDRINUSE. SO_REUSEADDR alone does not permit a second UDP bind on
-	 * the same address, but keeps rebinding painless after restarts. */
+	/* The port is owned exclusively: SO_REUSEPORT would make the kernel
+	 * load-balance unicast port-67 flows across the reuse group, silently
+	 * stealing renewals from a co-located DHCP daemon. If another daemon
+	 * owns the port, bind fails and the responder starts disabled instead.
+	 * SO_REUSEADDR just keeps rebinding painless after restarts. */
 	if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on)) < 0)
 	{
 		DBG1(DBG_NET, "dhcp-inform: failed to set SO_REUSEADDR: %s",
-			 strerror(errno));
-		err = errno;
-		close(fd);
-		return -err;
-	}
-	if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &on, sizeof(on)) < 0)
-	{
-		DBG1(DBG_NET, "dhcp-inform: failed to set SO_REUSEPORT: %s",
 			 strerror(errno));
 		err = errno;
 		close(fd);
@@ -975,8 +991,8 @@ dhcp_inform_responder_t *dhcp_inform_responder_create()
 		/* another DHCP daemon owns the port without SO_REUSEPORT; keep the
 		 * daemon running with the responder disabled instead of failing the
 		 * whole charon startup on such hosts */
-		DBG1(DBG_NET, "dhcp-inform: port 67 is taken by another process "
-			 "without SO_REUSEPORT, responder disabled");
+		DBG1(DBG_NET, "dhcp-inform: port 67 is taken by another process, "
+			 "responder disabled");
 		return &this->public;
 	}
 	if (this->fd < 0)
