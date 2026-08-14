@@ -123,9 +123,13 @@ static linked_list_t *extract_ts_from_ike_sa(const char *client_ip)
 		return routes;
 	}
 
-	/* Enumerate all IKE SAs to find one matching this client */
+	/* Enumerate all IKE SAs to find one matching this client.
+	 * wait = FALSE: the manager's wait for a checked-out SA is unbounded,
+	 * so waiting would let one stuck SA anywhere stall all DHCP service.
+	 * Skipping a busy SA at worst costs this exchange its routes and the
+	 * client's next INFORM refreshes them. */
 	ike_enum = charon->ike_sa_manager->create_enumerator(
-										charon->ike_sa_manager, TRUE);
+										charon->ike_sa_manager, FALSE);
 
 	while (ike_enum->enumerate(ike_enum, &ike_sa))
 	{
