@@ -133,8 +133,8 @@ static traffic_selector_t *parse_cidr(const char *cidr)
 		return NULL;
 	}
 
+	/* the constructor adopts and destroys the host */
 	ts = traffic_selector_create_from_subnet(host, prefix, 0, 0, 65535);
-	host->destroy(host);
 	free(ip_str);
 
 	return ts;
