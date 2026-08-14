@@ -816,19 +816,12 @@ static int create_dhcp_socket(const char *iface)
 		return -errno;
 	}
 
-	/* The port is owned exclusively: SO_REUSEPORT would make the kernel
-	 * load-balance unicast port-67 flows across the reuse group, silently
-	 * stealing renewals from a co-located DHCP daemon. If another daemon
-	 * owns the port, bind fails and the responder starts disabled instead.
-	 * SO_REUSEADDR just keeps rebinding painless after restarts. */
-	if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on)) < 0)
-	{
-		DBG1(DBG_NET, "dhcp-inform: failed to set SO_REUSEADDR: %s",
-			 strerror(errno));
-		err = errno;
-		close(fd);
-		return -err;
-	}
+	/* The port is owned exclusively, without any address reuse: for UDP,
+	 * SO_REUSEADDR/SO_REUSEPORT would let this bind slip next to an
+	 * existing DHCP daemon and divert its unicast traffic. UDP has no
+	 * TIME_WAIT, so nothing is needed for restart handling either; when
+	 * another daemon owns the port, bind fails with EADDRINUSE and the
+	 * responder starts disabled. */
 
 	/* DHCPINFORM is typically sent to 255.255.255.255 */
 	if (setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &on, sizeof(on)) < 0)
@@ -1004,6 +997,13 @@ dhcp_inform_responder_t *dhcp_inform_responder_create()
 	/* Register with watcher */
 	lib->watcher->add(lib->watcher, this->fd, WATCHER_READ,
 					  receive_dhcp, this);
+
+	/* Warm the FQDN cache only now: construction cannot fail anymore, so
+	 * the queued background jobs cannot outlive the provider they use */
+	if (this->db_provider)
+	{
+		this->db_provider->prewarm(this->db_provider);
+	}
 
 	DBG1(DBG_NET, "dhcp-inform: responder started on %s (%s)",
 		 iface ?: "all", server_ip);

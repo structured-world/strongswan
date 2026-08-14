@@ -41,6 +41,15 @@ struct dhcp_inform_db_provider_t {
 	 * Implements dhcp_inform_provider_t interface
 	 */
 	dhcp_inform_provider_t provider;
+
+	/**
+	 * Queue background resolution of the fqdn resources already in the
+	 * database. Call only once the owning responder can no longer fail
+	 * construction: the queued jobs reference this provider.
+	 *
+	 * @param this			provider instance
+	 */
+	void (*prewarm)(dhcp_inform_db_provider_t *this);
 };
 
 /**

@@ -268,12 +268,18 @@ static job_requeue_t resolve_fqdn_job(fqdn_job_t *job)
  * v_user_routes, so the cache is warm before the first DHCPINFORM arrives
  * and cold names cost a route only when added to the database at runtime
  */
-static void prewarm_fqdn_cache(private_dhcp_inform_db_provider_t *this)
+METHOD(dhcp_inform_db_provider_t, prewarm, void,
+	private_dhcp_inform_db_provider_t *this)
 {
 	enumerator_t *enumerator;
 	fqdn_entry_t *entry;
 	fqdn_job_t *job;
 	char *fqdn;
+
+	if (!this->db)
+	{
+		return;
+	}
 
 	enumerator = this->db->query(this->db,
 		"SELECT DISTINCT resource_value FROM v_user_routes "
@@ -655,6 +661,7 @@ dhcp_inform_db_provider_t *dhcp_inform_db_provider_create()
 				.is_available = _is_available,
 				.destroy = _destroy,
 			},
+			.prewarm = _prewarm,
 		},
 		.fqdn_cache = hashtable_create(hashtable_hash_str,
 									   hashtable_equals_str, 4),
@@ -671,7 +678,6 @@ dhcp_inform_db_provider_t *dhcp_inform_db_provider_create()
 		if (this->db)
 		{
 			DBG1(DBG_CFG, "dhcp-inform: database provider connected");
-			prewarm_fqdn_cache(this);
 		}
 		else
 		{
