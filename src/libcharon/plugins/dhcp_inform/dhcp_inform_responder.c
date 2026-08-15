@@ -2,7 +2,11 @@
  * Copyright (C) 2025 Structured World Foundation
  *
  * DHCP Inform Responder - responds to Windows DHCPINFORM with routes.
- * Uses packet socket like forecast plugin to catch broadcast from VPN tunnels.
+ *
+ * Receives over a plain UDP socket bound to port 67: the kernel delivers
+ * datagrams there after IP processing, so DHCPINFORM works both off the
+ * wire and as xfrm-decapsulated tunnel payload from road-warrior clients
+ * (a device-level packet socket never sees the tunnelled case).
  *
  * Route sources (in priority order):
  * 1. Traffic Selectors (EXCLUSIVE - when enabled, only TS routes are used)
@@ -22,25 +26,15 @@
 #include "dhcp_inform_static_provider.h"
 
 #include <daemon.h>
-#include <threading/thread.h>
-#include <processing/jobs/callback_job.h>
 #include <collections/linked_list.h>
 
 #include <unistd.h>
 #include <errno.h>
 #include <string.h>
 #include <netinet/in.h>
-#include <netinet/ip.h>
-#include <netinet/udp.h>
 #include <sys/socket.h>
-#include <sys/ioctl.h>
 #include <net/if.h>
-#include <linux/filter.h>
-#include <linux/if_packet.h>
-#include <linux/if_ether.h>
 #include <arpa/inet.h>
-#include <netdb.h>
-#include <ifaddrs.h>
 
 /* DHCP constants */
 #define DHCP_SERVER_PORT 67
@@ -72,9 +66,6 @@
 #define DHCP_OPT_CLASSLESS_ROUTES     121  /* RFC 3442 */
 #define DHCP_OPT_MS_CLASSLESS_ROUTES  249  /* Microsoft */
 #define DHCP_OPT_END           255
-
-/* Standard IP TTL for locally-generated packets */
-#define IP_DEFAULT_TTL         64
 
 /* Minimum DHCP message size (excluding options): op through magic = 236 bytes + 4 for options */
 #define DHCP_MIN_MSG_SIZE      240
@@ -127,22 +118,13 @@ struct private_dhcp_inform_responder_t {
 	dhcp_inform_static_provider_t *static_provider;
 
 	/**
-	 * Packet socket for receiving broadcasts (AF_PACKET)
+	 * UDP socket bound to the DHCP server port, used both to receive
+	 * DHCPINFORM and to send the DHCPACK reply
 	 */
-	int pkt_fd;
+	int fd;
 
 	/**
-	 * Raw socket for sending unicast responses (AF_INET, SOCK_RAW)
-	 */
-	int raw_fd;
-
-	/**
-	 * Interface index
-	 */
-	int ifindex;
-
-	/**
-	 * VPN interface name
+	 * VPN interface name (socket is bound to it when configured)
 	 */
 	char *iface;
 
@@ -181,10 +163,66 @@ static bool route_exists_in_list(linked_list_t *list, traffic_selector_t *ts)
 }
 
 /**
+ * Find the IKE identity of the peer holding the given virtual IP.
+ * Returns a clone the caller must destroy, NULL if no IKE_SA matches.
+ */
+static identification_t *find_identity_by_vip(uint32_t vip_addr)
+{
+	identification_t *identity = NULL;
+	enumerator_t *enumerator;
+	ike_sa_t *ike_sa;
+	host_t *vip;
+	struct sockaddr_in addr = {
+		.sin_family = AF_INET,
+		.sin_addr.s_addr = vip_addr,
+	};
+
+	vip = host_create_from_sockaddr((sockaddr_t*)&addr);
+	if (!vip)
+	{
+		return NULL;
+	}
+
+	/* wait = FALSE: the manager's wait for a checked-out IKE_SA is
+	 * unbounded and the enumerator visits every SA, so waiting would let
+	 * a single SA stuck in a long operation anywhere on the daemon stall
+	 * all DHCP service. Skipping a busy SA at worst costs this exchange
+	 * its identity routes; the client's next INFORM refreshes them. */
+	enumerator = charon->controller->create_ike_sa_enumerator(
+						charon->controller, FALSE);
+	while (!identity && enumerator->enumerate(enumerator, &ike_sa))
+	{
+		enumerator_t *vip_enum;
+		host_t *ike_vip;
+
+		vip_enum = ike_sa->create_virtual_ip_enumerator(ike_sa, FALSE);
+		while (vip_enum->enumerate(vip_enum, &ike_vip))
+		{
+			if (vip->ip_equals(vip, ike_vip))
+			{
+				/* prefer the authenticated EAP identity, it falls back to
+				 * the IKE identity for non-EAP peers; clone it, the
+				 * identification_t is owned by the IKE_SA and only valid
+				 * while the enumerator holds it */
+				identity = ike_sa->get_other_eap_id(ike_sa);
+				identity = identity->clone(identity);
+				break;
+			}
+		}
+		vip_enum->destroy(vip_enum);
+	}
+	enumerator->destroy(enumerator);
+	vip->destroy(vip);
+
+	return identity;
+}
+
+/**
  * Add routes from provider to list with deduplication
  */
 static void add_routes_from_provider(dhcp_inform_provider_t *provider,
 									 const char *client_ip,
+									 identification_t *identity,
 									 linked_list_t *routes)
 {
 	linked_list_t *provider_routes;
@@ -198,7 +236,7 @@ static void add_routes_from_provider(dhcp_inform_provider_t *provider,
 		return;
 	}
 
-	provider_routes = provider->get_routes(provider, client_ip);
+	provider_routes = provider->get_routes(provider, client_ip, identity);
 	if (!provider_routes)
 	{
 		return;
@@ -249,7 +287,8 @@ static void add_routes_from_provider(dhcp_inform_provider_t *provider,
  * for graceful fallback - highest-priority available source is selected.
  */
 static linked_list_t *get_routes_for_client(private_dhcp_inform_responder_t *this,
-											const char *client_ip)
+											const char *client_ip,
+											uint32_t ciaddr)
 {
 	linked_list_t *routes;
 	dhcp_inform_provider_t *ts_prov, *db_prov, *static_prov;
@@ -281,7 +320,7 @@ static linked_list_t *get_routes_for_client(private_dhcp_inform_responder_t *thi
 	if (ts_prov && ts_prov->is_available(ts_prov))
 	{
 		DBG1(DBG_NET, "dhcp-inform: using TS routes mode (exclusive)");
-		add_routes_from_provider(ts_prov, client_ip, routes);
+		add_routes_from_provider(ts_prov, client_ip, NULL, routes);
 		DBG1(DBG_NET, "dhcp-inform: found %d routes from TS for %s",
 			 routes->get_count(routes), client_ip);
 		return routes;
@@ -290,8 +329,30 @@ static linked_list_t *get_routes_for_client(private_dhcp_inform_responder_t *thi
 	/* MODE 2: Database routes (exclusive) */
 	if (db_prov && db_prov->is_available(db_prov))
 	{
+		identification_t *identity;
+
 		DBG1(DBG_NET, "dhcp-inform: using database routes mode (exclusive)");
-		add_routes_from_provider(db_prov, client_ip, routes);
+		/* The SA scan runs only here: the database provider is the sole
+		 * identity consumer, this branch means it is the selected route
+		 * source, and a pool-only schema without v_user_routes never pays
+		 * for a lookup it cannot use */
+		identity = NULL;
+		if (this->db_provider->uses_identity(this->db_provider))
+		{
+			identity = find_identity_by_vip(ciaddr);
+		}
+		if (identity)
+		{
+			DBG1(DBG_NET, "dhcp-inform: client %s identified as %Y",
+				 client_ip, identity);
+		}
+		else
+		{
+			DBG2(DBG_NET, "dhcp-inform: no IKE_SA found for client %s",
+				 client_ip);
+		}
+		add_routes_from_provider(db_prov, client_ip, identity, routes);
+		DESTROY_IF(identity);
 		DBG1(DBG_NET, "dhcp-inform: found %d routes from DB for %s",
 			 routes->get_count(routes), client_ip);
 		return routes;
@@ -301,7 +362,7 @@ static linked_list_t *get_routes_for_client(private_dhcp_inform_responder_t *thi
 	if (static_prov && static_prov->is_available(static_prov))
 	{
 		DBG1(DBG_NET, "dhcp-inform: using static routes mode (exclusive)");
-		add_routes_from_provider(static_prov, client_ip, routes);
+		add_routes_from_provider(static_prov, client_ip, NULL, routes);
 		DBG1(DBG_NET, "dhcp-inform: found %d routes from config for %s",
 			 routes->get_count(routes), client_ip);
 		return routes;
@@ -312,9 +373,11 @@ static linked_list_t *get_routes_for_client(private_dhcp_inform_responder_t *thi
 }
 
 /**
- * Encode routes as DHCP option 121/249 format
+ * Encode routes as DHCP option 121/249 format, truncating at max_len so the
+ * result always fits the space the caller has left for both option copies
  */
-static chunk_t encode_classless_routes(linked_list_t *routes, uint32_t gateway)
+static chunk_t encode_classless_routes(linked_list_t *routes, uint32_t gateway,
+									   size_t max_len)
 {
 	chunk_t encoded;
 	enumerator_t *enumerator;
@@ -329,13 +392,20 @@ static chunk_t encode_classless_routes(linked_list_t *routes, uint32_t gateway)
 		host_t *net;
 		uint8_t prefix;
 
+		/* options 121/249 are IPv4-only; providers filter families, this
+		 * guards against any selector slipping through (e.g. from TS mode) */
+		if (ts->get_type(ts) != TS_IPV4_ADDR_RANGE)
+		{
+			continue;
+		}
+
 		ts->to_subnet(ts, &net, &prefix);
 		net->destroy(net);
 		route_len = 1 + ((prefix + 7) / 8) + 4;
-		/* Check for overflow (max DHCP option is 255 bytes anyway) */
-		if (total_len + route_len > 255)
+		if (total_len + route_len > max_len)
 		{
-			DBG1(DBG_NET, "dhcp-inform: routes exceed maximum option size");
+			DBG1(DBG_NET, "dhcp-inform: truncating routes to the %zu bytes "
+				 "the DHCP options can carry", max_len);
 			break;
 		}
 		total_len += route_len;
@@ -363,6 +433,11 @@ static chunk_t encode_classless_routes(linked_list_t *routes, uint32_t gateway)
 		chunk_t net_chunk;
 		uint8_t prefix;
 		int subnet_bytes;
+
+		if (ts->get_type(ts) != TS_IPV4_ADDR_RANGE)
+		{
+			continue;
+		}
 
 		ts->to_subnet(ts, &net, &prefix);
 		net_chunk = net->get_address(net);
@@ -397,12 +472,15 @@ static chunk_t encode_classless_routes(linked_list_t *routes, uint32_t gateway)
 }
 
 /**
- * Find DHCP option in packet
+ * Find DHCP option in packet, parsing only the actually received bytes:
+ * clients commonly send the 300-byte BOOTP minimum, less than the full
+ * options capacity of dhcp_packet_t
  */
-static uint8_t *find_dhcp_option(dhcp_packet_t *pkt, uint8_t code, uint8_t *len)
+static uint8_t *find_dhcp_option(dhcp_packet_t *pkt, size_t pkt_len,
+								 uint8_t code, uint8_t *len)
 {
 	uint8_t *opt = pkt->options;
-	uint8_t *end = pkt->options + sizeof(pkt->options);
+	uint8_t *end = (uint8_t*)pkt + min(pkt_len, sizeof(*pkt));
 
 	while (opt < end && *opt != DHCP_OPT_END)
 	{
@@ -417,6 +495,11 @@ static uint8_t *find_dhcp_option(dhcp_packet_t *pkt, uint8_t code, uint8_t *len)
 		}
 		if (*opt == code)
 		{
+			/* reject options whose payload extends past the received data */
+			if (opt + 2 + opt[1] > end)
+			{
+				break;
+			}
 			if (len)
 			{
 				*len = opt[1];
@@ -434,116 +517,50 @@ static uint8_t *find_dhcp_option(dhcp_packet_t *pkt, uint8_t code, uint8_t *len)
 }
 
 /**
- * Get DHCP message type
+ * Get DHCP message type, 0 unless the option carries exactly one byte
  */
-static uint8_t get_dhcp_type(dhcp_packet_t *pkt)
+static uint8_t get_dhcp_type(dhcp_packet_t *pkt, size_t pkt_len)
 {
-	uint8_t *type = find_dhcp_option(pkt, DHCP_OPT_MESSAGE_TYPE, NULL);
-	return type ? *type : 0;
+	uint8_t *type, type_len = 0;
+
+	type = find_dhcp_option(pkt, pkt_len, DHCP_OPT_MESSAGE_TYPE, &type_len);
+	return (type && type_len == 1) ? *type : 0;
 }
 
 /**
- * Calculate IP checksum
- */
-static uint16_t ip_checksum(void *data, size_t len)
-{
-	uint32_t sum = 0;
-	uint16_t *ptr = data;
-
-	while (len > 1)
-	{
-		sum += *ptr++;
-		len -= 2;
-	}
-	if (len == 1)
-	{
-		sum += *(uint8_t*)ptr;
-	}
-
-	while (sum >> 16)
-	{
-		sum = (sum & 0xFFFF) + (sum >> 16);
-	}
-
-	return ~sum;
-}
-
-/**
- * Calculate UDP checksum with pseudo-header
- */
-static uint16_t udp_checksum(uint32_t src, uint32_t dst,
-							 void *data, size_t len)
-{
-	uint32_t sum = 0;
-	uint16_t *ptr;
-
-	/* Pseudo-header */
-	sum += (src >> 16) & 0xFFFF;
-	sum += src & 0xFFFF;
-	sum += (dst >> 16) & 0xFFFF;
-	sum += dst & 0xFFFF;
-	sum += htons(IPPROTO_UDP);
-	sum += htons(len);
-
-	/* UDP header + data */
-	ptr = (uint16_t*)data;
-	while (len > 1)
-	{
-		sum += *ptr++;
-		len -= 2;
-	}
-	if (len == 1)
-	{
-		sum += *(uint8_t*)ptr;
-	}
-
-	while (sum >> 16)
-	{
-		sum = (sum & 0xFFFF) + (sum >> 16);
-	}
-
-	return ~sum;
-}
-
-/**
- * IP ID counter for packet identification (atomic increment for thread safety)
- */
-static uint32_t ip_id_counter = 0;
-
-/**
- * Send DHCPACK response via raw socket
+ * Send DHCPACK response, unicast to the client's address over the same
+ * UDP socket the request arrived on; the kernel routes it back through
+ * the IPsec policy like any other datagram
  */
 static void send_dhcp_ack(private_dhcp_inform_responder_t *this,
 						  dhcp_packet_t *request, linked_list_t *routes,
 						  uint32_t client_ip)
 {
-	struct __attribute__((packed)) {
-		struct iphdr ip;
-		struct udphdr udp;
-		dhcp_packet_t dhcp;
-	} pkt;
+	dhcp_packet_t ack;
 	uint8_t *opt;
 	uint8_t *opt_end;
 	chunk_t routes_encoded = chunk_empty;
 	struct sockaddr_in dest;
-	size_t dhcp_len, udp_len, total_len;
+	size_t ack_len;
 	size_t required_space;
+	size_t routes_max;
 
-	memset(&pkt, 0, sizeof(pkt));
+	memset(&ack, 0, sizeof(ack));
 
 	/* Build DHCP response */
-	pkt.dhcp.op = 2;  /* BOOTREPLY */
-	pkt.dhcp.htype = request->htype;
-	pkt.dhcp.hlen = request->hlen;
-	pkt.dhcp.xid = request->xid;
-	pkt.dhcp.ciaddr = client_ip;
-	pkt.dhcp.yiaddr = client_ip;
-	pkt.dhcp.siaddr = this->server_ip;
-	memcpy(pkt.dhcp.chaddr, request->chaddr, 16);
-	pkt.dhcp.magic = htonl(DHCP_MAGIC_COOKIE);
+	ack.op = 2;  /* BOOTREPLY */
+	ack.htype = request->htype;
+	ack.hlen = request->hlen;
+	ack.xid = request->xid;
+	ack.ciaddr = client_ip;
+	/* RFC 2131 4.3.5: an ACK answering INFORM assigns nothing, so yiaddr
+	 * stays zero, and siaddr names a bootstrap next-server, not us: the
+	 * server identity travels in option 54 only */
+	memcpy(ack.chaddr, request->chaddr, 16);
+	ack.magic = htonl(DHCP_MAGIC_COOKIE);
 
-	opt = pkt.dhcp.options;
-	opt_end = pkt.dhcp.options + sizeof(pkt.dhcp.options);
+	opt = ack.options;
+	opt_end = ack.options + sizeof(ack.options);
 
 	/* Message Type = DHCPACK */
 	*opt++ = DHCP_OPT_MESSAGE_TYPE;
@@ -565,10 +582,21 @@ static void send_dhcp_ack(private_dhcp_inform_responder_t *this,
 		opt += 4;
 	}
 
-	/* Encode routes with server_ip as gateway */
-	routes_encoded = encode_classless_routes(routes, this->server_ip);
+	/* Encode routes with server_ip as gateway, capped to the space that
+	 * remains for TWO option copies (2-byte headers each) plus END, and to
+	 * the 255-byte single-option maximum */
+	if (opt + 5 < opt_end)
+	{
+		routes_max = min((size_t)(opt_end - opt - 5) / 2, (size_t)255);
+	}
+	else
+	{
+		routes_max = 0;
+	}
+	routes_encoded = encode_classless_routes(routes, this->server_ip,
+											 routes_max);
 
-	if (routes_encoded.len > 0 && routes_encoded.len <= 255)
+	if (routes_encoded.len > 0)
 	{
 		/* Calculate required space: 2 options * (2 byte header + data) + END */
 		required_space = 2 * (2 + routes_encoded.len) + 1;
@@ -608,41 +636,53 @@ static void send_dhcp_ack(private_dhcp_inform_responder_t *this,
 		return;
 	}
 
-	/* Calculate lengths */
-	dhcp_len = sizeof(dhcp_packet_t);
-	udp_len = sizeof(struct udphdr) + dhcp_len;
-	total_len = sizeof(struct iphdr) + udp_len;
+	/* Send only the used part of the message, never less than the
+	 * 300-byte BOOTP minimum some clients insist on */
+	ack_len = max((size_t)(opt - (uint8_t*)&ack), (size_t)300);
 
-	/* Build IP header */
-	pkt.ip.version = 4;
-	pkt.ip.ihl = 5;
-	pkt.ip.tos = 0;
-	pkt.ip.tot_len = htons(total_len);
-	pkt.ip.id = htons(__sync_fetch_and_add(&ip_id_counter, 1) & 0xFFFF);
-	pkt.ip.frag_off = 0;
-	pkt.ip.ttl = IP_DEFAULT_TTL;
-	pkt.ip.protocol = IPPROTO_UDP;
-	pkt.ip.saddr = this->server_ip;
-	pkt.ip.daddr = client_ip;
-	pkt.ip.check = 0;
-	pkt.ip.check = ip_checksum(&pkt.ip, sizeof(pkt.ip));
-
-	/* Build UDP header */
-	pkt.udp.source = htons(DHCP_SERVER_PORT);
-	pkt.udp.dest = htons(DHCP_CLIENT_PORT);
-	pkt.udp.len = htons(udp_len);
-	pkt.udp.check = 0;
-	pkt.udp.check = udp_checksum(pkt.ip.saddr, pkt.ip.daddr, &pkt.udp, udp_len);
-
-	/* Send via raw socket - routing handled by kernel policy */
 	memset(&dest, 0, sizeof(dest));
 	dest.sin_family = AF_INET;
+	dest.sin_port = htons(DHCP_CLIENT_PORT);
 	dest.sin_addr.s_addr = client_ip;
 
-	if (sendto(this->raw_fd, &pkt, total_len, 0,
-			   (struct sockaddr*)&dest, sizeof(dest)) < 0)
+	/* Pin the source to the configured server address via IP_PKTINFO: an
+	 * unconnected socket would take it from the route, which can disagree
+	 * with the DHCP server identifier and miss the IPsec policy */
+	struct iovec iov = {
+		.iov_base = &ack,
+		.iov_len = ack_len,
+	};
+	char cbuf[CMSG_SPACE(sizeof(struct in_pktinfo))] = {};
+	struct msghdr msg = {
+		.msg_name = &dest,
+		.msg_namelen = sizeof(dest),
+		.msg_iov = &iov,
+		.msg_iovlen = 1,
+		.msg_control = cbuf,
+		.msg_controllen = sizeof(cbuf),
+	};
+	struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+	struct in_pktinfo *pktinfo;
+
+	cmsg->cmsg_level = IPPROTO_IP;
+	cmsg->cmsg_type = IP_PKTINFO;
+	cmsg->cmsg_len = CMSG_LEN(sizeof(struct in_pktinfo));
+	pktinfo = (struct in_pktinfo*)CMSG_DATA(cmsg);
+	pktinfo->ipi_spec_dst.s_addr = this->server_ip;
+
+	if (sendmsg(this->fd, &msg, 0) < 0)
 	{
-		DBG1(DBG_NET, "dhcp-inform: failed to send DHCPACK: %s", strerror(errno));
+		/* the pinned source only routes when the configured server address
+		 * is local; fall back to route-selected source otherwise */
+		DBG2(DBG_NET, "dhcp-inform: send with pinned source failed (%s), "
+			 "retrying with routed source", strerror(errno));
+		msg.msg_control = NULL;
+		msg.msg_controllen = 0;
+		if (sendmsg(this->fd, &msg, 0) < 0)
+		{
+			DBG1(DBG_NET, "dhcp-inform: failed to send DHCPACK: %s",
+				 strerror(errno));
+		}
 	}
 	else
 	{
@@ -654,55 +694,19 @@ static void send_dhcp_ack(private_dhcp_inform_responder_t *this,
 }
 
 /**
- * Process received DHCP packet
+ * Process a received DHCP message (UDP payload, IP/UDP headers already
+ * stripped by the kernel)
  */
 static void process_dhcp_packet(private_dhcp_inform_responder_t *this,
-								struct iphdr *ip, size_t len)
+								dhcp_packet_t *dhcp, size_t len)
 {
-	struct udphdr *udp;
-	dhcp_packet_t *dhcp;
-	size_t ip_hdr_len, udp_len;
-	uint8_t msg_type;
 	linked_list_t *routes;
 	char client_ip_str[INET_ADDRSTRLEN];
 
-	if (len < sizeof(struct iphdr))
+	if (len < DHCP_MIN_MSG_SIZE)
 	{
 		return;
 	}
-
-	/* Validate IP header length field (ihl is in 32-bit words, valid range 5-15) */
-	if (ip->ihl < 5 || ip->ihl > 15)
-	{
-		return;
-	}
-
-	ip_hdr_len = ip->ihl * 4;
-	if (len < ip_hdr_len + sizeof(struct udphdr))
-	{
-		return;
-	}
-
-	udp = (struct udphdr*)((uint8_t*)ip + ip_hdr_len);
-	udp_len = ntohs(udp->len);
-
-	if (ntohs(udp->dest) != DHCP_SERVER_PORT)
-	{
-		return;
-	}
-
-	if (udp_len < sizeof(struct udphdr) + DHCP_MIN_MSG_SIZE)
-	{
-		return;
-	}
-
-	/* Verify actual buffer has enough data for DHCP packet before accessing */
-	if (len < ip_hdr_len + sizeof(struct udphdr) + sizeof(dhcp_packet_t))
-	{
-		return;
-	}
-
-	dhcp = (dhcp_packet_t*)((uint8_t*)udp + sizeof(struct udphdr));
 
 	/* Verify magic cookie */
 	if (ntohl(dhcp->magic) != DHCP_MAGIC_COOKIE)
@@ -716,9 +720,8 @@ static void process_dhcp_packet(private_dhcp_inform_responder_t *this,
 		return;
 	}
 
-	/* Only DHCPINFORM */
-	msg_type = get_dhcp_type(dhcp);
-	if (msg_type != DHCPINFORM)
+	/* Only DHCPINFORM, which carries the client's address in ciaddr */
+	if (get_dhcp_type(dhcp, len) != DHCPINFORM || !dhcp->ciaddr)
 	{
 		return;
 	}
@@ -727,8 +730,9 @@ static void process_dhcp_packet(private_dhcp_inform_responder_t *this,
 	inet_ntop(AF_INET, &dhcp->ciaddr, client_ip_str, sizeof(client_ip_str));
 	DBG1(DBG_NET, "dhcp-inform: received DHCPINFORM from %s", client_ip_str);
 
-	/* Get routes from providers (mutually exclusive: TS OR DB OR static) */
-	routes = get_routes_for_client(this, client_ip_str);
+	/* Get routes from providers (mutually exclusive: TS OR DB OR static);
+	 * the identity lookup happens inside, only for the mode that uses it */
+	routes = get_routes_for_client(this, client_ip_str, dhcp->ciaddr);
 
 	if (!routes)
 	{
@@ -739,7 +743,8 @@ static void process_dhcp_packet(private_dhcp_inform_responder_t *this,
 
 	if (routes->get_count(routes) > 0)
 	{
-		DBG1(DBG_NET, "dhcp-inform: sending DHCPACK with %d routes", routes->get_count(routes));
+		DBG1(DBG_NET, "dhcp-inform: sending DHCPACK with %d routes",
+			 routes->get_count(routes));
 		send_dhcp_ack(this, dhcp, routes, dhcp->ciaddr);
 	}
 	else
@@ -751,19 +756,22 @@ static void process_dhcp_packet(private_dhcp_inform_responder_t *this,
 }
 
 /**
- * Watcher callback for packet socket
+ * Watcher callback for the DHCP socket
  */
 CALLBACK(receive_dhcp, bool,
 	private_dhcp_inform_responder_t *this, int fd, watcher_event_t event)
 {
-	uint8_t buf[2048 + sizeof(struct iphdr)];
-	struct iphdr *hdr = (struct iphdr*)buf;
+	dhcp_packet_t packet;
+	struct sockaddr_in src;
+	socklen_t src_len = sizeof(src);
 	ssize_t len;
-	struct sockaddr_ll addr;
-	socklen_t alen = sizeof(addr);
 
-	len = recvfrom(fd, buf, sizeof(buf), MSG_DONTWAIT,
-				   (struct sockaddr*)&addr, &alen);
+	/* Zero so option parsing never walks uninitialized tail bytes when the
+	 * client sends less than the full options capacity */
+	memset(&packet, 0, sizeof(packet));
+
+	len = recvfrom(fd, &packet, sizeof(packet), MSG_DONTWAIT,
+				   (struct sockaddr*)&src, &src_len);
 
 	if (len < 0)
 	{
@@ -774,89 +782,101 @@ CALLBACK(receive_dhcp, bool,
 		return TRUE;
 	}
 
-	if (len >= (ssize_t)sizeof(struct iphdr))
+	/* Trust ciaddr only when it matches the actual sender: the wildcard
+	 * bind is reachable beyond the VPN, and a spoofed ciaddr would
+	 * otherwise trigger SA scans, database queries and misdirected ACKs */
+	if (src_len < sizeof(src) || src.sin_family != AF_INET ||
+		src.sin_port != htons(DHCP_CLIENT_PORT) ||
+		(len >= (ssize_t)DHCP_MIN_MSG_SIZE &&
+		 src.sin_addr.s_addr != packet.ciaddr))
 	{
-		process_dhcp_packet(this, hdr, len);
+		char src_str[INET_ADDRSTRLEN];
+
+		inet_ntop(AF_INET, &src.sin_addr, src_str, sizeof(src_str));
+		DBG2(DBG_NET, "dhcp-inform: dropping datagram with unexpected "
+			 "sender %s:%u", src_str, ntohs(src.sin_port));
+		return TRUE;
 	}
+
+	process_dhcp_packet(this, &packet, len);
 
 	return TRUE;
 }
 
 /**
- * Install BPF filter for DHCP broadcast packets
+ * Create the UDP socket receiving DHCPINFORM and sending replies.
+ * Returns the socket, or the negated errno of the failed operation.
  */
-static bool install_filter(private_dhcp_inform_responder_t *this)
+static int create_dhcp_socket(const char *iface)
 {
-	/* BPF filter:
-	 * - IP protocol = UDP
-	 * - UDP dest port = 67 (DHCP server)
-	 * - Dest IP = broadcast (0xFFFFFFFF) or our subnet broadcast
-	 */
-	struct sock_filter filter_code[] = {
-		/* Load IP protocol */
-		BPF_STMT(BPF_LD+BPF_B+BPF_ABS, offsetof(struct iphdr, protocol)),
-		/* Check if UDP (17) */
-		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, IPPROTO_UDP, 0, 7),
-		/* Load IP header length */
-		BPF_STMT(BPF_LDX+BPF_B+BPF_MSH, 0),
-		/* Load UDP dest port (at IP header + 2) */
-		BPF_STMT(BPF_LD+BPF_H+BPF_IND, 2),
-		/* Check if port 67 */
-		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, DHCP_SERVER_PORT, 0, 4),
-		/* Load dest IP */
-		BPF_STMT(BPF_LD+BPF_W+BPF_ABS, offsetof(struct iphdr, daddr)),
-		/* Check if broadcast 255.255.255.255 */
-		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, 0xFFFFFFFF, 1, 0),
-		/* Also accept limited broadcast - reject */
-		BPF_STMT(BPF_RET+BPF_K, 0),
-		/* Accept packet */
-		BPF_STMT(BPF_LD+BPF_W+BPF_LEN, 0),
-		BPF_STMT(BPF_RET+BPF_A, 0),
+	struct sockaddr_in addr = {
+		.sin_family = AF_INET,
+		.sin_port = htons(DHCP_SERVER_PORT),
+		.sin_addr.s_addr = htonl(INADDR_ANY),
 	};
-	struct sock_fprog filter = {
-		.len = sizeof(filter_code) / sizeof(struct sock_filter),
-		.filter = filter_code,
-	};
+	int fd, err, on = 1;
 
-	if (setsockopt(this->pkt_fd, SOL_SOCKET, SO_ATTACH_FILTER,
-				   &filter, sizeof(filter)) < 0)
+	fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, IPPROTO_UDP);
+	if (fd < 0)
 	{
-		DBG1(DBG_NET, "dhcp-inform: failed to attach BPF filter: %s",
+		DBG1(DBG_NET, "dhcp-inform: failed to create socket: %s",
 			 strerror(errno));
-		return FALSE;
+		return -errno;
 	}
 
-	return TRUE;
-}
+	/* The port is owned exclusively, without any address reuse: for UDP,
+	 * SO_REUSEADDR/SO_REUSEPORT would let this bind slip next to an
+	 * existing DHCP daemon and divert its unicast traffic. UDP has no
+	 * TIME_WAIT, so nothing is needed for restart handling either; when
+	 * another daemon owns the port, bind fails with EADDRINUSE and the
+	 * responder starts disabled. */
 
-/**
- * Get interface index
- */
-static int get_ifindex(int fd, const char *ifname)
-{
-	struct ifreq ifr = {};
-
-	strncpy(ifr.ifr_name, ifname, IFNAMSIZ-1);
-	ifr.ifr_name[IFNAMSIZ-1] = '\0';
-
-	if (ioctl(fd, SIOCGIFINDEX, &ifr) == 0)
+	/* DHCPINFORM is typically sent to 255.255.255.255 */
+	if (setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &on, sizeof(on)) < 0)
 	{
-		return ifr.ifr_ifindex;
+		DBG1(DBG_NET, "dhcp-inform: failed to set SO_BROADCAST: %s",
+			 strerror(errno));
+		err = errno;
+		close(fd);
+		return -err;
 	}
-	return 0;
+
+	/* Optional: restrict to the VPN interface. Tunnelled packets are still
+	 * delivered, they surface on the interface carrying the ESP traffic.
+	 * The binding applies to the whole socket, so ACKs also egress here:
+	 * an rx-only device filter does not exist for UDP, and a second port-67
+	 * send socket would need address reuse, reopening the flow-diversion
+	 * hole that exclusive ownership closes. Asymmetrically routed gateways
+	 * should leave the option unset and let routing pick the egress. */
+	if (iface && setsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE, iface,
+							strlen(iface)) < 0)
+	{
+		DBG1(DBG_NET, "dhcp-inform: failed to bind to %s: %s",
+			 iface, strerror(errno));
+		err = errno;
+		close(fd);
+		return -err;
+	}
+
+	if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0)
+	{
+		DBG1(DBG_NET, "dhcp-inform: failed to bind to port 67: %s",
+			 strerror(errno));
+		err = errno;
+		close(fd);
+		return -err;
+	}
+
+	return fd;
 }
 
 METHOD(dhcp_inform_responder_t, destroy, void,
 	private_dhcp_inform_responder_t *this)
 {
-	if (this->pkt_fd >= 0)
+	if (this->fd >= 0)
 	{
-		lib->watcher->remove(lib->watcher, this->pkt_fd);
-		close(this->pkt_fd);
-	}
-	if (this->raw_fd >= 0)
-	{
-		close(this->raw_fd);
+		lib->watcher->remove(lib->watcher, this->fd);
+		close(this->fd);
 	}
 
 	/* Destroy providers */
@@ -884,15 +904,13 @@ dhcp_inform_responder_t *dhcp_inform_responder_create()
 {
 	private_dhcp_inform_responder_t *this;
 	char *iface, *server_ip, *dns_server;
-	int on = 1;
 	bool has_routes = FALSE;
 
 	INIT(this,
 		.public = {
 			.destroy = _destroy,
 		},
-		.pkt_fd = -1,
-		.raw_fd = -1,
+		.fd = -1,
 	);
 
 	/* Get configuration */
@@ -972,73 +990,44 @@ dhcp_inform_responder_t *dhcp_inform_responder_create()
 		}
 	}
 
-	/* Create packet socket for receiving broadcasts */
-	this->pkt_fd = socket(AF_PACKET, SOCK_DGRAM, htons(ETH_P_IP));
-	if (this->pkt_fd < 0)
+	/* Create the UDP socket used for both directions */
+	this->fd = create_dhcp_socket(iface);
+	if (this->fd == -EADDRINUSE)
 	{
-		DBG1(DBG_NET, "dhcp-inform: failed to create packet socket: %s",
-			 strerror(errno));
+		/* another DHCP daemon owns the port without SO_REUSEPORT; keep the
+		 * daemon running with the responder disabled instead of failing the
+		 * whole charon startup on such hosts */
+		DBG1(DBG_NET, "dhcp-inform: port 67 is taken by another process, "
+			 "responder disabled");
+		return &this->public;
+	}
+	if (this->fd < 0)
+	{
 		destroy(this);
 		return NULL;
 	}
 
-	/* Create raw socket for sending responses */
-	this->raw_fd = socket(AF_INET, SOCK_RAW, IPPROTO_RAW);
-	if (this->raw_fd < 0)
+	/* Warm the FQDN cache only now: construction cannot fail anymore, so
+	 * the queued background jobs cannot outlive the provider they use.
+	 * The database enumeration below is synchronous and must finish before
+	 * the watcher can dispatch an INFORM: SQLite in multi-thread builds
+	 * forbids concurrent use of one connection and the driver only locks
+	 * for serialized builds. DNS warming stays asynchronous: an INFORM
+	 * racing the first resolutions at worst gets an ACK without an FQDN
+	 * route, and the client's next periodic INFORM fills it in; delaying
+	 * the ACK instead would risk the client's retransmit timeout, losing
+	 * ALL routes for that exchange. */
+	if (this->db_provider)
 	{
-		DBG1(DBG_NET, "dhcp-inform: failed to create raw socket: %s",
-			 strerror(errno));
-		destroy(this);
-		return NULL;
-	}
-
-	/* Set IP_HDRINCL for raw socket */
-	if (setsockopt(this->raw_fd, IPPROTO_IP, IP_HDRINCL, &on, sizeof(on)) < 0)
-	{
-		DBG1(DBG_NET, "dhcp-inform: failed to set IP_HDRINCL: %s",
-			 strerror(errno));
-		destroy(this);
-		return NULL;
-	}
-
-	/* Get interface index and bind packet socket */
-	if (iface)
-	{
-		this->ifindex = get_ifindex(this->raw_fd, iface);
-		if (!this->ifindex)
-		{
-			DBG1(DBG_NET, "dhcp-inform: failed to get interface index for %s",
-				 iface);
-			destroy(this);
-			return NULL;
-		}
-
-		struct sockaddr_ll addr = {
-			.sll_family = AF_PACKET,
-			.sll_protocol = htons(ETH_P_IP),
-			.sll_ifindex = this->ifindex,
-		};
-		if (bind(this->pkt_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0)
-		{
-			DBG1(DBG_NET, "dhcp-inform: failed to bind packet socket to %s: %s",
-				 iface, strerror(errno));
-			destroy(this);
-			return NULL;
-		}
-	}
-
-	/* Install BPF filter */
-	if (!install_filter(this))
-	{
-		destroy(this);
-		return NULL;
+		this->db_provider->prewarm(this->db_provider);
 	}
 
 	/* Register with watcher */
-	lib->watcher->add(lib->watcher, this->pkt_fd, WATCHER_READ,
+	lib->watcher->add(lib->watcher, this->fd, WATCHER_READ,
 					  receive_dhcp, this);
 
-	DBG1(DBG_NET, "dhcp-inform: responder started on %s", iface ?: "all");
+	DBG1(DBG_NET, "dhcp-inform: responder started on %s (%s)",
+		 iface ?: "all", server_ip);
 
 	return &this->public;
 }

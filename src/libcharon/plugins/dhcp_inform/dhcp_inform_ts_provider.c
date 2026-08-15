@@ -123,9 +123,13 @@ static linked_list_t *extract_ts_from_ike_sa(const char *client_ip)
 		return routes;
 	}
 
-	/* Enumerate all IKE SAs to find one matching this client */
+	/* Enumerate all IKE SAs to find one matching this client.
+	 * wait = FALSE: the manager's wait for a checked-out SA is unbounded,
+	 * so waiting would let one stuck SA anywhere stall all DHCP service.
+	 * Skipping a busy SA at worst costs this exchange its routes and the
+	 * client's next INFORM refreshes them. */
 	ike_enum = charon->ike_sa_manager->create_enumerator(
-										charon->ike_sa_manager, TRUE);
+										charon->ike_sa_manager, FALSE);
 
 	while (ike_enum->enumerate(ike_enum, &ike_sa))
 	{
@@ -157,9 +161,10 @@ static linked_list_t *extract_ts_from_ike_sa(const char *client_ip)
 		child_enum = ike_sa->create_child_sa_enumerator(ike_sa);
 		while (child_enum->enumerate(child_enum, &child_sa))
 		{
-			/* Get remote (server-side) traffic selectors - these are the
-			 * networks the client should be able to reach */
-			ts_enum = child_sa->create_ts_enumerator(child_sa, FALSE);
+			/* The gateway's local (own) traffic selectors are the protected
+			 * networks the client reaches through the tunnel; the remote
+			 * side would merely name the client's own virtual IP */
+			ts_enum = child_sa->create_ts_enumerator(child_sa, TRUE);
 			while (ts_enum->enumerate(ts_enum, &ts))
 			{
 				traffic_selector_t *clone;
@@ -202,7 +207,8 @@ static linked_list_t *extract_ts_from_ike_sa(const char *client_ip)
 }
 
 METHOD(dhcp_inform_provider_t, get_routes, linked_list_t*,
-	private_dhcp_inform_ts_provider_t *this, const char *client_ip)
+	private_dhcp_inform_ts_provider_t *this, const char *client_ip,
+	identification_t *identity)
 {
 	linked_list_t *routes;
 

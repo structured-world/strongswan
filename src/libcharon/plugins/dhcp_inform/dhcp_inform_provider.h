@@ -16,6 +16,7 @@
 #define DHCP_INFORM_PROVIDER_H_
 
 #include <collections/linked_list.h>
+#include <utils/identification.h>
 
 typedef struct dhcp_inform_provider_t dhcp_inform_provider_t;
 
@@ -30,16 +31,19 @@ typedef struct dhcp_inform_provider_t dhcp_inform_provider_t;
 struct dhcp_inform_provider_t {
 
 	/**
-	 * Get routes for a client by virtual IP.
+	 * Get routes for a client by virtual IP and, when known, IKE identity.
 	 *
 	 * @param this			provider instance
 	 * @param client_ip		client's virtual IP address string
+	 * @param identity		client's IKE identity, NULL if no IKE_SA holds
+	 *						the virtual IP (providers may ignore it)
 	 * @return				linked_list_t of traffic_selector_t (caller destroys).
 	 *						Returns valid list (possibly empty) on success.
 	 *						NULL indicates allocation failure; callers must handle.
 	 */
 	linked_list_t* (*get_routes)(dhcp_inform_provider_t *this,
-								 const char *client_ip);
+								 const char *client_ip,
+								 identification_t *identity);
 
 	/**
 	 * Get provider name for logging.

@@ -101,10 +101,21 @@ PLUGIN_DEFINE(dhcp_inform)
 {
 	private_dhcp_inform_plugin_t *this;
 
-	if (!lib->caps->keep(lib->caps, CAP_NET_RAW))
+	if (!lib->caps->keep(lib->caps, CAP_NET_BIND_SERVICE))
 	{
-		/* Required for AF_PACKET socket to receive broadcasts */
-		DBG1(DBG_NET, "dhcp-inform plugin requires CAP_NET_RAW capability");
+		/* Required to bind the DHCP server port (67) */
+		DBG1(DBG_NET, "dhcp-inform plugin requires CAP_NET_BIND_SERVICE "
+			 "capability");
+		return NULL;
+	}
+	if (lib->settings->get_str(lib->settings,
+			"%s.plugins.dhcp-inform.interface", NULL, lib->ns) &&
+		!lib->caps->keep(lib->caps, CAP_NET_RAW))
+	{
+		/* SO_BINDTODEVICE on a non-loopback interface requires CAP_NET_RAW
+		 * even on a plain UDP socket */
+		DBG1(DBG_NET, "dhcp-inform plugin requires CAP_NET_RAW capability "
+			 "to bind to an interface");
 		return NULL;
 	}
 
