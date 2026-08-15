@@ -475,6 +475,12 @@ static uint32_t resolve_fqdn(private_dhcp_inform_db_provider_t *this,
 		this->fqdn_cache->put(this->fqdn_cache, strdup(fqdn), entry);
 	}
 	ip_addr = entry->addr;
+	if (ip_addr && now - entry->last_ok > FQDN_MAX_STALE)
+	{
+		/* the resolver has not succeeded within the stale bound, it may
+		 * be stuck behind a slow lookup: the bound holds on reads too */
+		ip_addr = 0;
+	}
 	if (entry->expires <= now && !entry->resolving)
 	{
 		entry->resolving = TRUE;
