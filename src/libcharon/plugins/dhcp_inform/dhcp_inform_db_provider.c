@@ -340,6 +340,52 @@ static void queue_resolution(private_dhcp_inform_db_provider_t *this,
  * v_user_routes, so the cache is warm before the first DHCPINFORM arrives
  * and cold names cost a route only when added to the database at runtime
  */
+/**
+ * Record whether the last v_user_routes query was usable; failures re-arm
+ * the periodic probe
+ */
+static void update_user_routes_state(private_dhcp_inform_db_provider_t *this,
+									 bool usable)
+{
+	this->mutex->lock(this->mutex);
+	this->user_routes = usable;
+	if (!usable)
+	{
+		this->user_routes_recheck = time_monotonic(NULL) + USER_ROUTES_RECHECK;
+	}
+	this->mutex->unlock(this->mutex);
+}
+
+/**
+ * When the recheck window has expired and no identity query ran, test the
+ * view with an empty-identity lookup so the probe state still advances:
+ * without this an expired window would re-run the SA scan on every request
+ * until some peer matches
+ */
+static void probe_user_routes(private_dhcp_inform_db_provider_t *this)
+{
+	enumerator_t *enumerator;
+	bool due;
+
+	this->mutex->lock(this->mutex);
+	due = !this->user_routes &&
+		  time_monotonic(NULL) >= this->user_routes_recheck;
+	this->mutex->unlock(this->mutex);
+	if (!due)
+	{
+		return;
+	}
+	enumerator = this->db->query(this->db,
+		"SELECT resource_type, resource_value FROM v_user_routes "
+		"WHERE identity = ''",
+		DB_TEXT, DB_TEXT);
+	if (enumerator)
+	{
+		enumerator->destroy(enumerator);
+	}
+	update_user_routes_state(this, enumerator != NULL);
+}
+
 METHOD(dhcp_inform_db_provider_t, uses_identity, bool,
 	private_dhcp_inform_db_provider_t *this)
 {
@@ -379,10 +425,7 @@ METHOD(dhcp_inform_db_provider_t, prewarm, void,
 		/* pool-only schema: remember that the optional view is absent so
 		 * requests skip the identity lookup and its doomed query until the
 		 * next periodic probe; the view may be created later */
-		this->mutex->lock(this->mutex);
-		this->user_routes = FALSE;
-		this->user_routes_recheck = time_monotonic(NULL) + USER_ROUTES_RECHECK;
-		this->mutex->unlock(this->mutex);
+		update_user_routes_state(this, FALSE);
 		DBG1(DBG_CFG, "dhcp-inform-db: v_user_routes not queryable, "
 			 "identity routes disabled for %ds", USER_ROUTES_RECHECK);
 		return;
@@ -551,15 +594,10 @@ static int add_identity_routes(private_dhcp_inform_db_provider_t *this,
 	{
 		DBG1(DBG_CFG, "dhcp-inform-db: v_user_routes not queryable, "
 			 "identity routes disabled for %ds", USER_ROUTES_RECHECK);
-		this->mutex->lock(this->mutex);
-		this->user_routes = FALSE;
-		this->user_routes_recheck = time_monotonic(NULL) + USER_ROUTES_RECHECK;
-		this->mutex->unlock(this->mutex);
+		update_user_routes_state(this, FALSE);
 		return 0;
 	}
-	this->mutex->lock(this->mutex);
-	this->user_routes = TRUE;
-	this->mutex->unlock(this->mutex);
+	update_user_routes_state(this, TRUE);
 
 	while (enumerator->enumerate(enumerator, &resource_type, &resource_value))
 	{
@@ -691,6 +729,10 @@ METHOD(dhcp_inform_provider_t, get_routes, linked_list_t*,
 	if (identity)
 	{
 		routes_added += add_identity_routes(this, identity, routes);
+	}
+	else
+	{
+		probe_user_routes(this);
 	}
 	routes_added += add_pool_routes(this, client, routes);
 
