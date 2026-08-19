@@ -134,6 +134,11 @@ struct private_dhcp_inform_responder_t {
 	uint32_t server_ip;
 
 	/**
+	 * Source address for DHCPACK replies, defaults to the server address
+	 */
+	uint32_t source_ip;
+
+	/**
 	 * DNS server to advertise
 	 */
 	uint32_t dns_server;
@@ -645,9 +650,9 @@ static void send_dhcp_ack(private_dhcp_inform_responder_t *this,
 	dest.sin_port = htons(DHCP_CLIENT_PORT);
 	dest.sin_addr.s_addr = client_ip;
 
-	/* Pin the source to the configured server address via IP_PKTINFO: an
-	 * unconnected socket would take it from the route, which can disagree
-	 * with the DHCP server identifier and miss the IPsec policy */
+	/* Pin the reply source via IP_PKTINFO: an unconnected socket would
+	 * take it from the route, which can disagree with the DHCP server
+	 * identifier and miss the IPsec policy */
 	struct iovec iov = {
 		.iov_base = &ack,
 		.iov_len = ack_len,
@@ -668,21 +673,15 @@ static void send_dhcp_ack(private_dhcp_inform_responder_t *this,
 	cmsg->cmsg_type = IP_PKTINFO;
 	cmsg->cmsg_len = CMSG_LEN(sizeof(struct in_pktinfo));
 	pktinfo = (struct in_pktinfo*)CMSG_DATA(cmsg);
-	pktinfo->ipi_spec_dst.s_addr = this->server_ip;
+	pktinfo->ipi_spec_dst.s_addr = this->source_ip;
 
 	if (sendmsg(this->fd, &msg, 0) < 0)
 	{
-		/* the pinned source only routes when the configured server address
-		 * is local; fall back to route-selected source otherwise */
-		DBG2(DBG_NET, "dhcp-inform: send with pinned source failed (%s), "
-			 "retrying with routed source", strerror(errno));
-		msg.msg_control = NULL;
-		msg.msg_controllen = 0;
-		if (sendmsg(this->fd, &msg, 0) < 0)
-		{
-			DBG1(DBG_NET, "dhcp-inform: failed to send DHCPACK: %s",
-				 strerror(errno));
-		}
+		/* never fall back to a route-selected source: a reply from an
+		 * address outside the negotiated traffic selectors misses the
+		 * IPsec policy and would disclose the route set in clear text */
+		DBG1(DBG_NET, "dhcp-inform: failed to send DHCPACK from pinned "
+			 "source: %s", strerror(errno));
 	}
 	else
 	{
@@ -898,12 +897,35 @@ METHOD(dhcp_inform_responder_t, destroy, void,
 }
 
 /**
+ * Check whether an IPv4 address is configured on the host by binding an
+ * ephemeral UDP socket to it
+ */
+static bool address_is_local(uint32_t addr)
+{
+	struct sockaddr_in sin = {
+		.sin_family = AF_INET,
+		.sin_addr.s_addr = addr,
+	};
+	int fd, ret;
+
+	fd = socket(AF_INET, SOCK_DGRAM, 0);
+	if (fd < 0)
+	{
+		/* cannot probe, do not warn on a guess */
+		return TRUE;
+	}
+	ret = bind(fd, (struct sockaddr*)&sin, sizeof(sin));
+	close(fd);
+	return ret == 0;
+}
+
+/**
  * See header
  */
 dhcp_inform_responder_t *dhcp_inform_responder_create()
 {
 	private_dhcp_inform_responder_t *this;
-	char *iface, *server_ip, *dns_server;
+	char *iface, *server_ip, *dns_server, *source_ip;
 	bool has_routes = FALSE;
 
 	INIT(this,
@@ -920,6 +942,8 @@ dhcp_inform_responder_t *dhcp_inform_responder_create()
 		"%s.plugins.dhcp-inform.server", NULL, lib->ns);
 	dns_server = lib->settings->get_str(lib->settings,
 		"%s.plugins.dhcp-inform.dns", NULL, lib->ns);
+	source_ip = lib->settings->get_str(lib->settings,
+		"%s.plugins.dhcp-inform.source_address", NULL, lib->ns);
 
 	if (!server_ip)
 	{
@@ -966,6 +990,32 @@ dhcp_inform_responder_t *dhcp_inform_responder_create()
 		DBG1(DBG_NET, "dhcp-inform: invalid server IP: %s", server_ip);
 		destroy(this);
 		return NULL;
+	}
+
+	/* Parse the reply source, defaults to the server address */
+	if (source_ip)
+	{
+		if (inet_pton(AF_INET, source_ip, &this->source_ip) != 1)
+		{
+			DBG1(DBG_NET, "dhcp-inform: invalid source address: %s",
+				 source_ip);
+			destroy(this);
+			return NULL;
+		}
+	}
+	else
+	{
+		this->source_ip = this->server_ip;
+	}
+	if (!address_is_local(this->source_ip))
+	{
+		char buf[INET_ADDRSTRLEN];
+
+		inet_ntop(AF_INET, &this->source_ip, buf, sizeof(buf));
+		/* not fatal: a floating HA address may only arrive on promotion,
+		 * and the source is applied per packet, not at bind time */
+		DBG1(DBG_NET, "dhcp-inform: reply source %s is not configured on "
+			 "any interface, DHCPACKs will fail until it appears", buf);
 	}
 
 	/* Parse DNS server */
