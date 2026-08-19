@@ -992,8 +992,9 @@ dhcp_inform_responder_t *dhcp_inform_responder_create()
 		return NULL;
 	}
 
-	/* Parse the reply source, defaults to the server address */
-	if (source_ip)
+	/* Parse the reply source, defaults to the server address; an empty
+	 * value means unset */
+	if (source_ip && *source_ip)
 	{
 		if (inet_pton(AF_INET, source_ip, &this->source_ip) != 1)
 		{
@@ -1006,6 +1007,14 @@ dhcp_inform_responder_t *dhcp_inform_responder_create()
 	else
 	{
 		this->source_ip = this->server_ip;
+	}
+	if (this->source_ip == INADDR_ANY)
+	{
+		/* a zero ipi_spec_dst places no constraint on the source and
+		 * would reopen the route-selected cleartext path */
+		DBG1(DBG_NET, "dhcp-inform: reply source cannot be 0.0.0.0");
+		destroy(this);
+		return NULL;
 	}
 	if (!address_is_local(this->source_ip))
 	{
