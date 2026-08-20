@@ -23,9 +23,10 @@
 #ifndef MEMORY_H_
 #define MEMORY_H_
 
+#include <stdint.h>
+
 #ifdef HAVE_EXPLICIT_BZERO
 #include <string.h>
-#include <stdint.h>
 #endif
 
 /**
