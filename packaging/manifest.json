@@ -45,7 +45,12 @@
         {
           "id": "fedora",
           "name": "Fedora",
-          "versions": ["39", "40", "41", "42"],
+          "versions": [
+            "39",
+            "40",
+            "41",
+            "42"
+          ],
           "prefix": "fc",
           "arch": "x86_64"
         }
@@ -58,17 +63,27 @@
         {
           "id": "ubuntu",
           "name": "Ubuntu",
-          "codenames": ["jammy", "noble"],
-          "versions": ["22.04", "24.04"]
+          "codenames": [
+            "jammy",
+            "noble"
+          ],
+          "versions": [
+            "22.04",
+            "24.04"
+          ]
         },
         {
           "id": "debian",
           "name": "Debian",
-          "codenames": ["bookworm"],
-          "versions": ["12"]
+          "codenames": [
+            "bookworm"
+          ],
+          "versions": [
+            "12"
+          ]
         }
       ],
-      "repoSetup": "# Add GPG key\ncurl -fsSL https://repo.sw.foundation/keys/sw.gpg \\\n  | sudo gpg --dearmor -o /etc/apt/keyrings/sw.gpg\n\n# Add repository\necho \"deb [signed-by=/etc/apt/keyrings/sw.gpg] \\\n  https://repo.sw.foundation/deb $(lsb_release -cs) main\" \\\n  | sudo tee /etc/apt/sources.list.d/sw.list\n\nsudo apt update",
+      "repoSetup": "# Add GPG key\ncurl -fsSL https://repo.sw.foundation/keys/sw.gpg \\\n  | sudo tee /etc/apt/keyrings/sw.gpg >/dev/null\n\n# Add repository\necho \"deb [signed-by=/etc/apt/keyrings/sw.gpg] \\\n  https://repo.sw.foundation/deb $(lsb_release -cs) main\" \\\n  | sudo tee /etc/apt/sources.list.d/sw.list\n\nsudo apt update",
       "installCmd": "sudo apt install"
     }
   },
