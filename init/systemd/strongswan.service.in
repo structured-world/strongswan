@@ -1,6 +1,10 @@
 [Unit]
 Description=strongSwan IPsec IKEv1/IKEv2 daemon using swanctl
-After=network-online.target
+# Ordering against local database services costs nothing when they are
+# absent or remote (systemd ignores ordering for units outside the
+# transaction), and prevents the boot race that starts the daemon before
+# a co-located database accepts connections.
+After=network-online.target postgresql.service mysql.service mariadb.service
 Wants=network-online.target
 
 [Service]
