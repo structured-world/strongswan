@@ -21,6 +21,7 @@
 
 #include <ctype.h>
 
+#include <library.h>
 #include <utils/debug.h>
 #include <utils/chunk.h>
 #include <threading/thread_value.h>
@@ -1396,6 +1397,20 @@ static char *build_conninfo(const char *uri)
 		}
 		offset += written;
 	}
+	{
+		/* bound the TCP connect: libpq dials without a timeout by default,
+		 * which would stall a query for minutes when the server is
+		 * unreachable instead of failing over to a later retry */
+		int timeout = lib->settings->get_int(lib->settings,
+						"%s.plugins.pgsql.connect_timeout", 5, lib->ns);
+		int written = snprintf(conninfo + offset, len - offset,
+							   " connect_timeout=%d", timeout);
+		if (written < 0 || (size_t)written >= len - offset)
+		{
+			goto truncation_error;
+		}
+		offset += written;
+	}
 
 	free(esc_user);
 	free(esc_pass);
@@ -1466,15 +1481,20 @@ pgsql_database_t *pgsql_database_create(char *uri)
 	this->pool = linked_list_create();
 	this->transaction = thread_value_create(NULL);
 
-	/* Check connectivity */
+	/* Probe connectivity for early diagnostics, but do not require it:
+	 * the pool redials on every query, so a database that is still
+	 * starting up (boot order, failover, restart) only delays queries
+	 * instead of permanently disabling every consumer of this handle */
 	conn = conn_get(this, NULL);
-	if (!conn)
+	if (conn)
 	{
-		destroy(this);
-		return NULL;
+		conn_release(this, conn);
+		DBG1(DBG_LIB, "PostgreSQL database connection established");
 	}
-	conn_release(this, conn);
-
-	DBG1(DBG_LIB, "PostgreSQL database connection established");
+	else
+	{
+		DBG1(DBG_LIB, "PostgreSQL database not reachable yet, connecting "
+			 "on demand");
+	}
 	return &this->public;
 }
