@@ -1,5 +1,11 @@
 name: CIFuzz
-on: [push, pull_request]
+# push is limited to long-lived branches: feature branches are fuzzed by the
+# pull_request run of the same commit, and the duplicate push run only burns
+# runners and breaks SARIF upload on branch names containing '#'
+on:
+  push:
+    branches: [sw, master]
+  pull_request:
 permissions: {}
 jobs:
   pre-check:
