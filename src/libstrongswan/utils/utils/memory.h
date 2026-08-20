@@ -25,6 +25,7 @@
 
 #ifdef HAVE_EXPLICIT_BZERO
 #include <string.h>
+#include <stdint.h>
 #endif
 
 /**
