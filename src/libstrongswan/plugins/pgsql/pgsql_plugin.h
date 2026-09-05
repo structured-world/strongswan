@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2025 Structured World Foundation
+ * Copyright (C) 2025 Dmitry Prudnikov
  * Based on mysql_plugin.h by Martin Willi
  *
  * This program is free software; you can redistribute it and/or modify it

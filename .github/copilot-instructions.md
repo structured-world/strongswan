@@ -2,7 +2,7 @@
 
 ## Repository Context
 
-This is the **Structured World Foundation fork** of strongSwan. The `sw` branch contains our modifications on top of upstream strongSwan.
+This is the **structured-world fork** of strongSwan, maintained by Dmitry Prudnikov. The `sw` branch contains our modifications on top of upstream strongSwan.
 
 ## Our Changes (vs upstream)
 
