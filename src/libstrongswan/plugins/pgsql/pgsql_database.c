@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2025 Structured World Foundation
+ * Copyright (C) 2025 Dmitry Prudnikov
  * Based on mysql_database.c by Martin Willi, Tobias Brunner
  *
  * PostgreSQL database backend for strongSwan

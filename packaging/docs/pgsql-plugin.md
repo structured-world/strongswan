@@ -204,7 +204,7 @@ charon {
 - [strongSwan Documentation](https://docs.strongswan.org/)
 - [SQL Plugin Documentation](https://docs.strongswan.org/docs/5.9/plugins/sql.html)
 - [attr-sql Plugin Documentation](https://docs.strongswan.org/docs/5.9/plugins/attr-sql.html)
-- [SW Foundation GitHub](https://github.com/structured-world/strongswan)
+- [Fork source on GitHub](https://github.com/structured-world/strongswan)
 
 ## Support
 
