@@ -242,11 +242,11 @@ jobs:
             "Conflicts: strongswan, strongswan-charon, strongswan-starter" \
             "Provides: strongswan (= ${VERSION})" \
             "Replaces: strongswan, strongswan-charon, strongswan-starter" \
-            "Maintainer: Structured World Foundation <dev@sw.foundation>" \
+            "Maintainer: Dmitry Prudnikov <mail@polaz.com>" \
             "Homepage: https://github.com/structured-world/strongswan" \
             "Description: strongSwan IPsec (SW fork)" \
             " strongSwan is a complete IPsec implementation for Linux." \
-            " This is the Structured World Foundation fork with socket permissions" \
+            " This is the structured-world fork with socket permissions" \
             " fix (umask 0660 for Unix sockets). Drop-in replacement for system" \
             " strongswan package." \
             > "${PKGDIR}/DEBIAN/control"
@@ -301,7 +301,7 @@ jobs:
             "Priority: optional" \
             "Architecture: ${ARCH}" \
             "Depends: strongswan-sw (= ${VERSION}), libpq5" \
-            "Maintainer: Structured World Foundation <dev@sw.foundation>" \
+            "Maintainer: Dmitry Prudnikov <mail@polaz.com>" \
             "Homepage: https://github.com/structured-world/strongswan" \
             "Description: PostgreSQL plugin for strongSwan" \
             " PostgreSQL database backend for strongSwan SQL plugin." \
@@ -350,7 +350,7 @@ jobs:
             "Priority: optional" \
             "Architecture: ${ARCH}" \
             "Depends: strongswan-sw (= ${VERSION}), strongswan-pgsql (= ${VERSION})" \
-            "Maintainer: Structured World Foundation <dev@sw.foundation>" \
+            "Maintainer: Dmitry Prudnikov <mail@polaz.com>" \
             "Homepage: https://github.com/structured-world/strongswan" \
             "Description: DHCP INFORM responder plugin for strongSwan" \
             " Responds to Windows DHCPINFORM requests with split-tunnel routes" \

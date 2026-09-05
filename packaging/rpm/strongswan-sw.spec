@@ -1,5 +1,5 @@
 # strongSwan SW fork spec file
-# Based on Fedora strongswan.spec with modifications for SW Foundation
+# Based on Fedora strongswan.spec with modifications for the structured-world fork
 
 %global _hardened_build 1
 
@@ -58,7 +58,7 @@ Obsoletes:      strongswan < %{upstream_version}
 
 %description
 strongSwan is a complete IPsec implementation for Linux.
-This is the Structured World Foundation fork with:
+This is the structured-world fork with:
 - Socket permissions fix (umask 0660 for Unix sockets)
 - PostgreSQL database plugin
 - DHCP-INFORM responder plugin for Windows split-tunnel routes
@@ -232,5 +232,5 @@ done
 
 %changelog
 # Use SOURCE_DATE_EPOCH for reproducible builds if set, otherwise current date
-* %([ -n "$SOURCE_DATE_EPOCH" ] && date -d "@$SOURCE_DATE_EPOCH" "+%a %b %d %Y" || date "+%a %b %d %Y") SW Foundation <dev@sw.foundation> - %{version}-%{release}
+* %([ -n "$SOURCE_DATE_EPOCH" ] && date -d "@$SOURCE_DATE_EPOCH" "+%a %b %d %Y" || date "+%a %b %d %Y") Dmitry Prudnikov <mail@polaz.com> - %{version}-%{release}
 - strongSwan SW fork release
