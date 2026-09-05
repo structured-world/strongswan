@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2025 Structured World Foundation
+ * Copyright (C) 2025 Dmitry Prudnikov
  *
  * DHCP Inform Responder - responds to Windows DHCPINFORM with routes.
  *
