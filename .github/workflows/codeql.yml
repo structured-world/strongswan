@@ -2,11 +2,15 @@ name: "CodeQL"
 
 # Run on all PRs to sw branch - use path filter inside job
 # This ensures the check always reports a status (success or skipped)
+# Scheduled and manual runs always analyze, keeping the sw analysis current
 on:
   push:
     branches: [sw]
   pull_request:
     branches: [sw]
+  schedule:
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -20,11 +24,17 @@ jobs:
   changes:
     name: CodeQL
     runs-on: ubuntu-latest
+    # Repository default token is read-only; the empty SARIF upload needs write
+    permissions:
+      contents: read
+      pull-requests: read
+      security-events: write
     outputs:
-      should_run: ${{ steps.filter.outputs.codeql }}
+      should_run: ${{ steps.filter.outputs.codeql == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
         id: filter
         with:
           filters: |
@@ -44,10 +54,12 @@ jobs:
             echo "No CodeQL-relevant paths changed, skipping analysis"
           fi
 
-      # Upload empty SARIF when skipping to satisfy code scanning requirements
+      # Upload empty SARIF when skipping to satisfy the code scanning rule on
+      # PRs. Never on push: an empty result on sw would replace the default
+      # branch analysis and close its alerts.
       - name: Upload empty SARIF (skip case)
-        if: steps.filter.outputs.codeql != 'true'
-        uses: github/codeql-action/upload-sarif@v3
+        if: github.event_name == 'pull_request' && steps.filter.outputs.codeql != 'true'
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: ${{ github.workspace }}/.github/codeql/empty.sarif
           category: "/language:cpp"
@@ -107,9 +119,9 @@ jobs:
         # Build libstrongswan, libcharon and pool (contain our changes);
         # the pool binary itself is gated on --enable-attr-sql (USE_ATTR_SQL
         # in src/pool/Makefile.am), --enable-sql alone only ships templates
-        make -C src/libstrongswan -j$(nproc)
-        make -C src/libcharon -j$(nproc)
-        make -C src/pool -j$(nproc)
+        make -C src/libstrongswan -j"$(nproc)"
+        make -C src/libcharon -j"$(nproc)"
+        make -C src/pool -j"$(nproc)"
 
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@v4
