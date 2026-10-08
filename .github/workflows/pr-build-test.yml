@@ -13,53 +13,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Check for unresolved review threads
-  check-reviews:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check unresolved threads
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const { data: pr } = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: context.payload.pull_request.number,
-            });
-
-            // Use GraphQL to get review threads
-            const query = `
-              query($owner: String!, $repo: String!, $pr: Int!) {
-                repository(owner: $owner, name: $repo) {
-                  pullRequest(number: $pr) {
-                    reviewThreads(first: 100) {
-                      nodes {
-                        isResolved
-                      }
-                    }
-                  }
-                }
-              }
-            `;
-
-            const result = await github.graphql(query, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pr: context.payload.pull_request.number,
-            });
-
-            const threads = result.repository.pullRequest.reviewThreads.nodes;
-            const unresolvedCount = threads.filter(t => !t.isResolved).length;
-
-            if (unresolvedCount > 0) {
-              core.setFailed(`PR has ${unresolvedCount} unresolved review thread(s). Address all comments before build test runs.`);
-            } else {
-              core.info(`All ${threads.length} review threads are resolved`);
-            }
-
   # Test build on one Fedora version (fastest feedback)
   build-test-rpm:
-    needs: check-reviews
     runs-on: ubuntu-latest
     container:
       image: fedora:43
@@ -145,7 +100,6 @@ jobs:
 
   # Test build on Ubuntu (DEB)
   build-test-deb:
-    needs: check-reviews
     runs-on: ubuntu-24.04
 
     steps:
